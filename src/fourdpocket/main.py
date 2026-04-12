@@ -88,9 +88,10 @@ async def add_security_headers(request, call_next):
 
 
 # Mount frontend static files if build directory exists
-frontend_dist = Path("frontend/dist")
+# Resolve relative to project root (3 levels up from src/fourdpocket/)
+frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend/dist"
 if frontend_dist.exists():
-    app.mount("/static", StaticFiles(directory=str(frontend_dist)), name="static")
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
 
 
 @app.get("/api/v1/health")
@@ -102,3 +103,14 @@ def health_check():
 from fourdpocket.api.router import api_router  # noqa: E402
 
 app.include_router(api_router)
+
+# SPA fallback — must be last so API routes take priority
+# Resolve relative to project root (3 levels up from src/fourdpocket/)
+SPA_INDEX = Path(__file__).resolve().parent.parent.parent / "frontend/dist/index.html"
+
+
+@app.api_route("/{path:path}", include_in_schema=False)
+async def serve_spa(path: str):
+    """Serve the SPA for any non-API, non-static route."""
+    from fastapi.responses import FileResponse
+    return FileResponse(str(SPA_INDEX))
