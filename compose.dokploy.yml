@@ -1,36 +1,25 @@
-x-pocket: &pocket
-  image: 4dpocket-dokploy:local
-  restart: unless-stopped
-  environment:
-    FDP_AUTH__MODE: multi
-    FDP_AUTH__ALLOW_REGISTRATION: "false"
-    FDP_DATABASE__URL: sqlite:////data/4dpocket.db
-    FDP_STORAGE__BASE_PATH: /data
-    FDP_SEARCH__BACKEND: sqlite
-    FDP_SERVER__PUBLIC_URL: ${FDP_SERVER__PUBLIC_URL:-https://thedutchrabbit.com}
-    FDP_SERVER__SECURE_COOKIES: ${FDP_SERVER__SECURE_COOKIES:-true}
-    FORWARDED_ALLOW_IPS: "*"
-    FDP_AI__CHAT_PROVIDER: ${FDP_AI__CHAT_PROVIDER:-noop}
-    FDP_AI__GROQ_API_KEY: ${FDP_AI__GROQ_API_KEY:-}
-    FDP_AI__GROQ_MODEL: ${FDP_AI__GROQ_MODEL:-openai/gpt-oss-20b}
-    FDP_ENRICHMENT__EXTRACT_ENTITIES: ${FDP_ENRICHMENT__EXTRACT_ENTITIES:-false}
-  volumes:
-    - pocket-data:/data
-
 services:
   app:
-    <<: *pocket
     build: .
-    pull_policy: build
+    init: true
+    restart: unless-stopped
     expose:
       - "4040"
-  worker:
-    <<: *pocket
-    pull_policy: never
-    command: ["worker"]
-    depends_on:
-      app:
-        condition: service_healthy
+    environment:
+      FDP_AUTH__MODE: multi
+      FDP_AUTH__ALLOW_REGISTRATION: "false"
+      FDP_DATABASE__URL: sqlite:////data/4dpocket.db
+      FDP_STORAGE__BASE_PATH: /data
+      FDP_SEARCH__BACKEND: sqlite
+      FDP_SERVER__PUBLIC_URL: ${FDP_SERVER__PUBLIC_URL:-https://thedutchrabbit.com}
+      FDP_SERVER__SECURE_COOKIES: ${FDP_SERVER__SECURE_COOKIES:-true}
+      FORWARDED_ALLOW_IPS: "*"
+      FDP_AI__CHAT_PROVIDER: ${FDP_AI__CHAT_PROVIDER:-noop}
+      FDP_AI__GROQ_API_KEY: ${FDP_AI__GROQ_API_KEY:-}
+      FDP_AI__GROQ_MODEL: ${FDP_AI__GROQ_MODEL:-openai/gpt-oss-20b}
+      FDP_ENRICHMENT__EXTRACT_ENTITIES: ${FDP_ENRICHMENT__EXTRACT_ENTITIES:-false}
+    volumes:
+      - pocket-data:/data
 
 volumes:
   pocket-data:
