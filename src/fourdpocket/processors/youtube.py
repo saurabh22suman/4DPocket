@@ -29,9 +29,11 @@ from fourdpocket.processors.sections import Section, make_section_id
 logger = logging.getLogger(__name__)
 
 
+_WATCH_URL = r"youtube\.com/watch\?(?:[^#]*?&)?v="
+
 def _extract_video_id(url: str) -> str | None:
     patterns = [
-        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})",
+        rf"(?:{_WATCH_URL}|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{{11}})",
         r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
     ]
     for p in patterns:
@@ -56,7 +58,7 @@ class YouTubeProcessor(BaseProcessor):
     """Extract YouTube video as structured sections (chapters + transcript)."""
 
     url_patterns = [
-        r"youtube\.com/watch\?v=",
+        _WATCH_URL,
         r"youtu\.be/[a-zA-Z0-9_-]+",
         r"youtube\.com/shorts/[a-zA-Z0-9_-]+",
         r"youtube\.com/embed/[a-zA-Z0-9_-]+",

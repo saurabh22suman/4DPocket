@@ -20,9 +20,11 @@ from fourdpocket.api.deps import (
 from fourdpocket.api.rate_limit import check_rate_limit, record_attempt, reset_rate_limit
 from fourdpocket.auth.email import send_email
 from fourdpocket.auth.tokens import generate_token, hash_token, is_expired
+from fourdpocket.config import get_settings
 from fourdpocket.models.api_token import ApiToken
 from fourdpocket.models.base import UserRole
 from fourdpocket.models.email_verification import EmailVerificationToken
+from fourdpocket.models.instance_settings import InstanceSettings
 from fourdpocket.models.password_reset import PasswordResetToken
 from fourdpocket.models.user import User, UserCreate, UserRead, UserUpdate
 
@@ -80,12 +82,20 @@ def _create_verification_token(db: Session, user_id) -> str:
     return raw
 
 
+@router.get("/config")
+def auth_config(db: Session = Depends(get_db)):
+    if not get_settings().auth.allow_registration:
+        return {"registration_enabled": False}
+    instance = db.get(InstanceSettings, 1)
+    return {"registration_enabled": instance is None or instance.registration_enabled}
+
+
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserCreate, request: Request, db: Session = Depends(get_db)):
     # Check instance registration settings BEFORE rate limiting to prevent
     # attackers from exhausting the rate limit when registration is disabled.
-    settings = get_or_create_settings(db)
-    if not settings.registration_enabled:
+    settings = get_or_create_settings(db) if get_settings().auth.allow_registration else None
+    if settings is None or not settings.registration_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Registration is currently disabled",

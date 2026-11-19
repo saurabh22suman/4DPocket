@@ -36,6 +36,7 @@ postgres = [
 semantic = [
     "chromadb>=0.5.0",
     "sentence-transformers>=3.0.0",
+    "torch==2.11.0",
 ]
 processors = [
     "yt-dlp>=2024.0.0",
@@ -57,6 +58,7 @@ pgvector = [
 ]
 reranker = [
     "sentence-transformers>=3.0.0",
+    "torch==2.11.0",
 ]
 all = [
     "4dpocket[postgres,semantic,processors,meilisearch,pgvector,reranker]",
@@ -120,3 +122,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501", "E402", "N814"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

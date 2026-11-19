@@ -29,7 +29,6 @@ PROVIDER_CONFIGS = {
     },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
-        "default_model": "llama-3.3-70b-versatile",
     },
     "nvidia": {
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -65,7 +64,7 @@ class OpenAICompatibleProvider:
             api_key = ov.get("groq_api_key") or settings.ai.groq_api_key
             if not api_key:
                 raise RuntimeError("groq chat provider requires api_key")
-            self._model = config["default_model"]
+            self._model = settings.ai.groq_model
         elif provider == "nvidia":
             api_key = ov.get("nvidia_api_key") or settings.ai.nvidia_api_key
             if not api_key:

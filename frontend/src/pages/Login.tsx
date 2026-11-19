@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/api/client";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { LogIn, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
@@ -20,6 +22,10 @@ export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const login = useLogin();
+  const { data: authConfig } = useQuery({
+    queryKey: ["auth-config"],
+    queryFn: () => api.get<{ registration_enabled: boolean }>("/api/v1/auth/config"),
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,15 +118,17 @@ export default function Login() {
             {login.isPending ? "Signing in..." : "Sign in"}
           </button>
 
-          <p className="text-center text-sm text-gray-500 dark:text-gray-400">
-            Don't have an account?{" "}
-            <Link
-              to="/register"
-              className="text-[#0096C7] hover:text-[#0077A8] dark:text-sky-400 font-medium cursor-pointer"
-            >
-              Create one
-            </Link>
-          </p>
+          {authConfig?.registration_enabled && (
+            <p className="text-center text-sm text-gray-500 dark:text-gray-400">
+              Don't have an account?{" "}
+              <Link
+                to="/register"
+                className="text-[#0096C7] hover:text-[#0077A8] dark:text-sky-400 font-medium cursor-pointer"
+              >
+                Create one
+              </Link>
+            </p>
+          )}
         </form>
       </div>
     </div>

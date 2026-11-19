@@ -79,6 +79,7 @@ class AuthSettings(BaseSettings):
     algorithm: str = "HS256"  # Hardcoded in auth_utils — do not change
     token_expire_minutes: int = 10080  # 7 days
     mode: str = "single"  # "single" or "multi"
+    allow_registration: bool = True
 
 
 class StorageSettings(BaseSettings):
@@ -114,6 +115,7 @@ class AISettings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
     nvidia_api_key: str = ""
     # Custom provider (any OpenAI-compatible or Anthropic-compatible endpoint)
     custom_base_url: str = ""

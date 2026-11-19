@@ -1,9 +1,9 @@
 # ─── Stage 1: Frontend Build ────────────────────────────────────
-FROM node:22-alpine AS frontend
+FROM node:22-bookworm-slim AS frontend
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN npm install --global pnpm@11.22.0 && pnpm install --frozen-lockfile --ignore-scripts
 COPY frontend/ ./
 RUN pnpm build
 
@@ -11,10 +11,11 @@ RUN pnpm build
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock* hatch_build.py ./
-RUN uv sync --no-dev --all-extras --frozen
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project --extra all
 
 COPY src/ ./src/
 

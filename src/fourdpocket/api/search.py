@@ -397,7 +397,7 @@ def get_search_filters(
     ).all()
 
     return {
-        "platforms": [{"name": str(p), "count": c} for p, c in platform_counts],
+        "platforms": [{"name": p.value, "count": c} for p, c in platform_counts],
         "types": [t.value for t in ItemType],
         "tags": [{"name": n, "slug": s, "count": c} for n, s, c in tags],
     }
