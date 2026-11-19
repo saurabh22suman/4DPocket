@@ -13,6 +13,7 @@ def _make_settings(provider, **overrides):
         "ollama_model": "llama3.2",
         "ollama_api_key": "",
         "groq_api_key": "",
+        "groq_model": "llama-3.3-70b-versatile",
         "nvidia_api_key": "",
         "custom_base_url": "",
         "custom_api_key": "",
@@ -47,12 +48,13 @@ class TestOpenAICompatibleProviderInit:
             assert "11434" in call_kwargs["base_url"]
 
     def test_groq_uses_groq_base_url(self, monkeypatch):
-        """Groq provider uses groq config base URL."""
-        monkeypatch.setattr("fourdpocket.ai.openai_compatible.get_settings", lambda: _make_settings("groq", groq_api_key="groq-test-key"))
+        """Groq uses the configured model and its own base URL."""
+        monkeypatch.setattr("fourdpocket.ai.openai_compatible.get_settings", lambda: _make_settings("groq", groq_api_key="groq-test-key", groq_model="openai/gpt-oss-20b"))
 
         with patch("fourdpocket.ai.openai_compatible.OpenAI") as mock_openai:
             from fourdpocket.ai.openai_compatible import OpenAICompatibleProvider
-            OpenAICompatibleProvider(provider="groq")
+            provider = OpenAICompatibleProvider(provider="groq")
+            assert provider._model == "openai/gpt-oss-20b"
             mock_openai.assert_called_once()
             call_kwargs = mock_openai.call_args.kwargs
             assert "api_key" in call_kwargs
