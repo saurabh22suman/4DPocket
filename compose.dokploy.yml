@@ -11,7 +11,7 @@ services:
       FDP_DATABASE__URL: sqlite:////data/4dpocket.db
       FDP_STORAGE__BASE_PATH: /data
       FDP_SEARCH__BACKEND: sqlite
-      FDP_SERVER__PUBLIC_URL: ${FDP_SERVER__PUBLIC_URL:-https://thedutchrabbit.com}
+      FDP_SERVER__PUBLIC_URL: ${FDP_SERVER__PUBLIC_URL:-https://4dpocket.thedutchrabbit.com}
       FDP_SERVER__SECURE_COOKIES: ${FDP_SERVER__SECURE_COOKIES:-true}
       FORWARDED_ALLOW_IPS: "*"
       FDP_AI__CHAT_PROVIDER: ${FDP_AI__CHAT_PROVIDER:-noop}
