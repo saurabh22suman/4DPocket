@@ -1,25 +1,22 @@
 """Tags CRUD endpoints."""
 
-import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.ai.tag_slug import normalize_tag_slug
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
 from fourdpocket.models.item import ItemRead, KnowledgeItem
 from fourdpocket.models.tag import ItemTag, Tag, TagCreate, TagRead, TagUpdate
 from fourdpocket.models.user import User
 
-router = APIRouter(prefix="/tags", tags=["tags"])
+router = APIRouter(prefix="/tags", tags=["Tags"])
 
 
 def _slugify(name: str) -> str:
-    slug = name.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s]+", "-", slug)
-    return slug
+    return normalize_tag_slug(name)
 
 
 @router.post("", response_model=TagRead, status_code=status.HTTP_201_CREATED)
@@ -27,6 +24,7 @@ def create_tag(
     tag_data: TagCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     slug = _slugify(tag_data.name)
 
@@ -91,6 +89,7 @@ def update_tag(
     tag_data: TagUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     tag = db.get(Tag, tag_id)
     if not tag or tag.user_id != current_user.id:
@@ -114,6 +113,7 @@ def delete_tag(
     tag_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     tag = db.get(Tag, tag_id)
     if not tag or tag.user_id != current_user.id:
@@ -186,6 +186,7 @@ def merge_tags(
     body: TagMergeRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Merge source tag into target tag. All items with source get target instead."""
     source = db.exec(
@@ -197,19 +198,44 @@ def merge_tags(
     if not source or not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
 
-    source_links = db.exec(select(ItemTag).where(ItemTag.tag_id == source.id)).all()
-    for link in source_links:
+    from fourdpocket.models.note_tag import NoteTag
+
+    # --- ItemTag migration ---
+    source_item_links = db.exec(select(ItemTag).where(ItemTag.tag_id == source.id)).all()
+    newly_moved_items = 0
+    for link in source_item_links:
         existing = db.exec(
             select(ItemTag).where(ItemTag.item_id == link.item_id, ItemTag.tag_id == target.id)
         ).first()
         if not existing:
             db.add(ItemTag(item_id=link.item_id, tag_id=target.id, confidence=link.confidence))
+            newly_moved_items += 1
         db.delete(link)
 
-    target.usage_count = (target.usage_count or 0) + (source.usage_count or 0)
+    # --- NoteTag migration ---
+    source_note_links = db.exec(select(NoteTag).where(NoteTag.tag_id == source.id)).all()
+    newly_moved_notes = 0
+    for link in source_note_links:
+        existing = db.exec(
+            select(NoteTag).where(NoteTag.note_id == link.note_id, NoteTag.tag_id == target.id)
+        ).first()
+        if not existing:
+            db.add(NoteTag(note_id=link.note_id, tag_id=target.id, confidence=link.confidence))
+            newly_moved_notes += 1
+        db.delete(link)
+
+    # Recount usage: existing target links + newly moved unique links
+    target_existing_item_count = db.exec(
+        select(ItemTag).where(ItemTag.tag_id == target.id)
+    ).all()
+    target_existing_note_count = db.exec(
+        select(NoteTag).where(NoteTag.tag_id == target.id)
+    ).all()
+    target.usage_count = len(target_existing_item_count) + len(target_existing_note_count) + newly_moved_items + newly_moved_notes
+
     db.delete(source)
     db.commit()
-    return {"status": "merged", "target_tag": target.name, "items_moved": len(source_links)}
+    return {"status": "merged", "target_tag": target.name, "items_moved": len(source_item_links)}
 
 
 @router.get("/{tag_id}/items", response_model=list[ItemRead])

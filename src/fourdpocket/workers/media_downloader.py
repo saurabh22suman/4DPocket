@@ -1,7 +1,6 @@
 """Background task for downloading media files."""
 
 import hashlib
-import ipaddress
 import logging
 import socket
 import uuid
@@ -9,44 +8,17 @@ from urllib.parse import urlparse
 
 import httpx
 
+from fourdpocket.utils.ssrf import is_safe_url
 from fourdpocket.workers import huey
 
 logger = logging.getLogger(__name__)
 
 MAX_MEDIA_SIZE_BYTES = 100 * 1024 * 1024  # 100MB
 
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
-
 
 def _is_safe_media_url(url: str) -> bool:
     """Check if URL is safe to download (SSRF protection)."""
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        hostname = parsed.hostname
-        if not hostname:
-            return False
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for family, _, _, _, sockaddr in addr_info:
-                ip = ipaddress.ip_address(sockaddr[0])
-                for network in _BLOCKED_NETWORKS:
-                    if ip in network:
-                        return False
-        except socket.gaierror:
-            return False
-        return True
-    except Exception:
-        return False
+    return is_safe_url(url)
 
 
 def _resolve_and_pin(url: str) -> str | None:
@@ -63,16 +35,14 @@ def _resolve_and_pin(url: str) -> str | None:
         if not addr_info:
             return None
         resolved_ip = addr_info[0][4][0]
-        ip = ipaddress.ip_address(resolved_ip)
-        for network in _BLOCKED_NETWORKS:
-            if ip in network:
-                return None
+        if not is_safe_url(f"http://{resolved_ip}"):
+            return None
         return resolved_ip
     except Exception:
         return None
 
 
-@huey.task(retries=1, retry_delay=60)
+@huey.task(retries=3, retry_delay=60)
 def download_media(item_id: str, user_id: str, media_urls: list[dict]) -> dict:
     """Download media files (images, thumbnails) and store locally.
 
@@ -111,12 +81,9 @@ def download_media(item_id: str, user_id: str, media_urls: list[dict]) -> dict:
                 if not pinned_ip:
                     logger.warning("SSRF blocked redirect: %s", current_url)
                     break
-                # Use pinned IP via transport to prevent DNS rebinding
-                parsed = urlparse(current_url)
-                transport = httpx.HTTPTransport(local_address=None)
                 resp = httpx.head(
                     current_url, timeout=10.0, follow_redirects=False,
-                    headers={"User-Agent": "4DPocket/0.1", "Host": parsed.hostname},
+                    headers={"User-Agent": "4DPocket/0.1"},
                 )
                 if resp.is_redirect:
                     current_url = resp.headers.get("location", "")

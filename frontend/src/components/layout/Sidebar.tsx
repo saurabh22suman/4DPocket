@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Home, BookOpen, Search, FolderOpen, Tags, FileText, Settings, Menu, X, Share2, Shield, LogOut, User, Rss, Zap, Clock, Highlighter, Star, Archive, BookMarked } from "lucide-react";
+import { Home, BookOpen, Search, FolderOpen, Tags, FileText, Settings, Menu, X, Share2, Shield, LogOut, User, Rss, Zap, Clock, Highlighter, Star, Archive, BookMarked, Network } from "lucide-react";
 import { useUIStore } from "@/stores/ui-store";
 import { useCurrentUser, useLogout } from "@/hooks/use-auth";
+import { version } from "../../../package.json";
 
 const navSections = [
   {
@@ -35,6 +37,7 @@ const navSections = [
     items: [
       { path: "/timeline", label: "Timeline", icon: Clock },
       { path: "/highlights", label: "Highlights", icon: Highlighter },
+      { path: "/entities", label: "Knowledge Graph", icon: Network },
     ],
   },
   {
@@ -57,16 +60,11 @@ function BellIcon() {
 
 function SidebarLogo() {
   return (
-    <svg viewBox="0 0 512 512" className="w-8 h-8 flex-shrink-0">
-      <circle cx="256" cy="256" r="240" fill="#0096C7"/>
-      <circle cx="256" cy="280" r="160" fill="white"/>
-      <path d="M176 300 Q176 380 256 380 Q336 380 336 300" fill="none" stroke="#0096C7" strokeWidth="8" strokeLinecap="round"/>
-      <path d="M196 300 Q196 260 256 260 Q316 260 316 300" fill="#F0F9FF" stroke="#0096C7" strokeWidth="4"/>
-      <text x="230" y="240" fontFamily="Inter, Arial, sans-serif" fontWeight="900" fontSize="64" fill="#0096C7">4D</text>
-      <circle cx="256" cy="340" r="16" fill="#FCD34D" stroke="#D97706" strokeWidth="2"/>
-      <line x1="256" y1="340" x2="256" y2="356" stroke="#D97706" strokeWidth="2"/>
-      <circle cx="256" cy="196" r="12" fill="#EF4444"/>
-    </svg>
+    <img
+      src="/icons/icon-192.png"
+      alt="4DPocket"
+      className="w-8 h-8 flex-shrink-0 rounded-md"
+    />
   );
 }
 
@@ -76,6 +74,15 @@ export function Sidebar() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const { data: user } = useCurrentUser();
   const logout = useLogout();
+
+  useEffect(() => {
+    if (collapsed) return;
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") toggleSidebar();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [collapsed, toggleSidebar]);
 
   const allSections = user?.role === "admin"
     ? navSections.map((s) =>
@@ -97,11 +104,23 @@ export function Sidebar() {
   };
 
   return (
-    <aside
-      className={`hidden md:flex flex-col border-r border-sky-100 dark:border-gray-800 bg-white dark:bg-gray-950 transition-all duration-200 ${
-        collapsed ? "w-16" : "w-60"
-      }`}
-    >
+    <>
+      {/* Mobile overlay backdrop */}
+      {!collapsed && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/50 z-30"
+          onClick={toggleSidebar}
+          onKeyDown={(e) => { if (e.key === "Escape") toggleSidebar(); }}
+          role="button"
+          tabIndex={0}
+          aria-label="Close sidebar"
+        />
+      )}
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col border-r border-sky-100 dark:border-gray-800 bg-white dark:bg-gray-950 transition-all duration-200 ${
+          collapsed ? "w-16 -translate-x-full md:translate-x-0" : "w-60 translate-x-0"
+        }`}
+      >
       <div className="flex items-center gap-2 p-4 border-b border-sky-100 dark:border-gray-800 min-h-[60px]">
         <button
           onClick={toggleSidebar}
@@ -163,7 +182,7 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="p-3 border-t border-sky-100 dark:border-gray-800">
+      <div className="p-3 border-t border-sky-100 dark:border-gray-800 pb-20 md:pb-0">
         {user && !collapsed ? (
           <div className="flex items-center gap-3 mb-2 px-1">
             <div className="w-8 h-8 rounded-full bg-sky-100 dark:bg-sky-900 flex items-center justify-center flex-shrink-0">
@@ -178,7 +197,7 @@ export function Sidebar() {
           </div>
         ) : null}
         <button
-          onClick={logout}
+          onClick={() => logout.mutate()}
           className={`flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-500 dark:text-gray-400 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 transition-all duration-200 cursor-pointer w-full min-h-[44px] ${
             collapsed ? "justify-center" : ""
           }`}
@@ -187,9 +206,10 @@ export function Sidebar() {
           {!collapsed && <span>Sign out</span>}
         </button>
         {!collapsed && (
-          <span className="block text-[10px] text-gray-400 dark:text-gray-600 px-3 mt-1">v0.1.0</span>
+          <span className="block text-[10px] text-gray-400 dark:text-gray-600 px-3 mt-1">v{version}</span>
         )}
       </div>
     </aside>
+    </>
   );
 }

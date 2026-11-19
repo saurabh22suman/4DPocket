@@ -6,11 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.api.deps import (
+    get_current_user,
+    get_db,
+    require_pat_deletion,
+    require_pat_editor,
+)
 from fourdpocket.models.saved_filter import SavedFilter
 from fourdpocket.models.user import User
 
-router = APIRouter(prefix="/filters", tags=["filters"])
+router = APIRouter(prefix="/filters", tags=["Saved Filters"])
 
 
 class FilterCreate(BaseModel):
@@ -37,7 +42,12 @@ def list_filters(db: Session = Depends(get_db), current_user: User = Depends(get
 
 
 @router.post("", status_code=201)
-def create_filter(body: FilterCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_filter(
+    body: FilterCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
+):
     f = SavedFilter(user_id=current_user.id, name=body.name, query=body.query, filters=body.filters)
     db.add(f)
     db.commit()
@@ -46,7 +56,12 @@ def create_filter(body: FilterCreate, db: Session = Depends(get_db), current_use
 
 
 @router.delete("/{filter_id}", status_code=204)
-def delete_filter(filter_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_filter(
+    filter_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_deletion),
+):
     f = db.exec(select(SavedFilter).where(SavedFilter.id == filter_id, SavedFilter.user_id == current_user.id)).first()
     if not f:
         raise HTTPException(status_code=404, detail="Filter not found")
@@ -60,6 +75,7 @@ def update_saved_filter(
     body: SavedFilterUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     sf = db.exec(
         select(SavedFilter).where(
@@ -93,16 +109,21 @@ def execute_saved_filter(
     if not sf:
         raise HTTPException(status_code=404, detail="Filter not found")
 
-    from fourdpocket.search.indexer import SearchIndexer
+    from fourdpocket.search import get_search_service
+    from fourdpocket.search.base import SearchFilters
 
-    indexer = SearchIndexer(db)
+    service = get_search_service()
 
-    filters = sf.filters or {}
-    results = indexer.search(
+    sf_filters = sf.filters or {}
+    search_filters = SearchFilters(
+        item_type=sf_filters.get("item_type"),
+        source_platform=sf_filters.get("source_platform"),
+    )
+    results = service.search(
+        db,
         query=sf.query or "",
         user_id=current_user.id,
-        item_type=filters.get("item_type"),
-        source_platform=filters.get("source_platform"),
+        filters=search_filters,
         limit=limit,
         offset=offset,
     )
@@ -112,7 +133,7 @@ def execute_saved_filter(
 
     from fourdpocket.models.item import KnowledgeItem
 
-    item_ids = [uuid.UUID(r["item_id"]) for r in results]
+    item_ids = [uuid.UUID(getattr(r, "item_id", None) or r["item_id"]) for r in results]
     items = db.exec(
         select(KnowledgeItem).where(
             KnowledgeItem.id.in_(item_ids),

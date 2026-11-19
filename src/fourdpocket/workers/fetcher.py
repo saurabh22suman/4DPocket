@@ -56,7 +56,7 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
 
     from fourdpocket.db.session import get_engine
     from fourdpocket.models.item import KnowledgeItem
-    from fourdpocket.search.indexer import SearchIndexer
+    from fourdpocket.search import get_search_service
 
     logger.info("Processing URL %s for item %s", url, item_id)
 
@@ -67,7 +67,7 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
             logger.error("Item %s not found", item_id)
             return {"status": "error", "error": "Item not found"}
 
-        indexer = SearchIndexer(db)
+        search_service = get_search_service()
 
         try:
             import asyncio
@@ -82,21 +82,55 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
                 item.title = result.title
             if result.description:
                 item.description = result.description
-            if result.content:
+            if result.source_platform:
+                item.source_platform = result.source_platform
+            if result.item_type:
+                item.item_type = result.item_type
+
+            # Section-aware: stash structured sections + auto-derive
+            # legacy content for processors that haven't migrated.
+            from dataclasses import asdict
+
+            from fourdpocket.processors.sections import (
+                section_summary_for_metadata,
+                sections_to_text,
+            )
+            sections = getattr(result, "sections", None) or []
+            if sections:
+                # Persist the section payload alongside other metadata so
+                # the chunker can re-hydrate it. Capped per item via
+                # max_chunks at chunking time.
+                serialized = [asdict(s) for s in sections]
+                item.item_metadata = {
+                    **item.item_metadata,
+                    **section_summary_for_metadata(sections),
+                    "_sections": serialized,
+                }
+                # Always overwrite content from sections — they're the
+                # authoritative source. Falls back to result.content for
+                # processors mid-migration.
+                item.content = sections_to_text(sections) or result.content
+            elif result.content:
                 item.content = result.content
+
             if result.raw_content:
                 item.raw_content = result.raw_content
             if result.media:
                 item.media = list(result.media)
             if result.metadata:
-                item.item_metadata = {**item.item_metadata, **result.metadata}
+                # Don't let processor metadata clobber the _sections we
+                # just stored above.
+                merged = {**item.item_metadata, **result.metadata}
+                if "_sections" in item.item_metadata and "_sections" not in result.metadata:
+                    merged["_sections"] = item.item_metadata["_sections"]
+                item.item_metadata = merged
 
             db.add(item)
             db.commit()
             db.refresh(item)
 
             # Index for search
-            indexer.index_item(item)
+            search_service.index_item(db, item)
 
             # Set favicon URL for generic URLs (brand platforms already have custom icons)
             if item.source_platform.value == "generic":
@@ -106,8 +140,8 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
 
             # Chain: AI enrichment (content now available)
             try:
-                from fourdpocket.workers.ai_enrichment import enrich_item
-                enrich_item(item_id, user_id)
+                from fourdpocket.workers.enrichment_pipeline import enrich_item_v2
+                enrich_item_v2(item_id, user_id)
             except Exception as chain_err:
                 logger.warning("Failed to chain enrich_item for %s: %s", item_id, chain_err)
 
@@ -129,7 +163,17 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
 
         except Exception as e:
             logger.error("Failed to process item %s: %s", item_id, e)
-            item.item_metadata = {**item.item_metadata, "_processing_error": str(e)[:500]}
-            db.add(item)
-            db.commit()
+            # The failure may have left the session in a rolled-back state (e.g.
+            # a DataError mid-flush). Roll back first so recording the error
+            # doesn't itself raise PendingRollbackError and swallow the failure.
+            db.rollback()
+            try:
+                item = db.get(KnowledgeItem, uuid.UUID(item_id))
+                if item is not None:
+                    item.item_metadata = {**item.item_metadata, "_processing_error": str(e)[:500]}
+                    db.add(item)
+                    db.commit()
+            except Exception as record_err:
+                logger.error("Failed to record processing error for %s: %s", item_id, record_err)
+                db.rollback()
             return {"status": "error", "error": str(e)[:500]}

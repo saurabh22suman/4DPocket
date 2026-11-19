@@ -1,6 +1,5 @@
 """Comment API endpoints."""
 
-import re
 import uuid
 from datetime import datetime
 
@@ -8,12 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.ai.sanitizer import strip_html
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
 from fourdpocket.models.comment import Comment
+from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.user import User
 from fourdpocket.sharing.permissions import can_view_item
 
-router = APIRouter(prefix="/items/{item_id}/comments", tags=["comments"])
+router = APIRouter(prefix="/items/{item_id}/comments", tags=["Comments"])
 
 
 # --- Schemas ---
@@ -45,13 +46,14 @@ def add_comment(
     body: CommentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     if not can_view_item(db, current_user.id, item_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
         )
     # Strip HTML tags from comment content for defense-in-depth
-    clean_content = re.sub(r"<[^>]+>", "", body.content)
+    clean_content = strip_html(body.content) or ""
     comment = Comment(
         user_id=current_user.id,
         item_id=item_id,
@@ -97,16 +99,20 @@ def delete_comment(
     comment_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     comment = db.get(Comment, comment_id)
     if not comment or comment.item_id != item_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found"
         )
+    # Comment author OR item owner may delete
     if comment.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot delete another user's comment",
-        )
+        item = db.get(KnowledgeItem, item_id)
+        if not item or item.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot delete another user's comment",
+            )
     db.delete(comment)
     db.commit()

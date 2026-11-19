@@ -1,14 +1,15 @@
 """Application configuration via pydantic-settings."""
 
 import secrets
+
+# Load .env file into os.environ so nested settings classes pick up the values.
+# Skip during pytest to avoid .env values interfering with test expectations.
+import sys as _sys
 from pathlib import Path
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Load .env file into os.environ so nested settings classes pick up the values.
-# Skip during pytest to avoid .env values interfering with test expectations.
-import sys as _sys
 if "pytest" not in _sys.modules:
     try:
         from dotenv import load_dotenv
@@ -22,6 +23,15 @@ def _get_or_create_secret_key() -> str:
 
     Uses file locking to prevent TOCTOU race conditions when multiple
     processes start simultaneously.
+
+    Key location precedence:
+    1. FDP_AUTH__SECRET_KEY env var (not persisted).
+    2. FDP_AUTH__SECRET_KEY_DIR env var → persisted there.
+    3. FDP_STORAGE__BASE_PATH env var → persisted at <base>/.secret/.
+       This is what deployments should rely on: the storage base_path is
+       typically a mounted volume (e.g. /data in Docker), so the key
+       survives container restarts and JWTs stay valid.
+    4. Fallback: ~/.4dpocket/secret_key.
     """
     import fcntl
     import os
@@ -29,7 +39,15 @@ def _get_or_create_secret_key() -> str:
     env_key = os.environ.get("FDP_AUTH__SECRET_KEY")
     if env_key:
         return env_key
-    key_dir = Path.home() / ".4dpocket"
+    explicit_dir = os.environ.get("FDP_AUTH__SECRET_KEY_DIR")
+    if explicit_dir:
+        key_dir = Path(explicit_dir)
+    else:
+        storage_base = os.environ.get("FDP_STORAGE__BASE_PATH")
+        if storage_base:
+            key_dir = Path(storage_base) / ".secret"
+        else:
+            key_dir = Path.home() / ".4dpocket"
     key_dir.mkdir(parents=True, exist_ok=True)
     key_file = key_dir / "secret_key"
     lock_file = key_dir / "secret_key.lock"
@@ -57,6 +75,7 @@ class AuthSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FDP_AUTH__")
 
     secret_key: str = Field(default_factory=_get_or_create_secret_key)
+    secret_key_previous: str = ""  # Grace-period key after rotation; see ops/rotate_key.py
     algorithm: str = "HS256"  # Hardcoded in auth_utils — do not change
     token_expire_minutes: int = 10080  # 7 days
     mode: str = "single"  # "single" or "multi"
@@ -67,7 +86,6 @@ class StorageSettings(BaseSettings):
 
     base_path: str = "./data"
     max_archive_size_mb: int = 50
-    screenshot_quality: int = 80
 
 
 class SearchSettings(BaseSettings):
@@ -76,6 +94,17 @@ class SearchSettings(BaseSettings):
     backend: str = "sqlite"  # "sqlite" or "meilisearch"
     meili_url: str = "http://localhost:7700"
     meili_master_key: str = ""
+    vector_backend: str = "auto"  # "auto", "chroma", "pgvector"
+    chunk_size_tokens: int = 512
+    chunk_overlap_tokens: int = 64
+    max_chunks_per_item: int = 200
+    # Graph-anchored ranker — third RRF input sourced from the concept graph.
+    # Default-on: no-op for users without entity data, contributes when entities
+    # have been populated by the enrichment pipeline. Admins can disable from
+    # the admin panel (InstanceSettings.extra["search_config"]).
+    graph_ranker_enabled: bool = True
+    graph_ranker_hop_decay: float = 0.5  # neighbor contribution = weight * hop_decay
+    graph_ranker_top_k: int = 50  # max items returned by the graph ranker
 
 
 class AISettings(BaseSettings):
@@ -100,14 +129,64 @@ class AISettings(BaseSettings):
     sync_enrichment: bool = False  # Set True in .env to run AI inline if Huey not running
 
 
+class RerankSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FDP_RERANK__")
+
+    enabled: bool = False
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    candidate_pool: int = 50
+    top_k: int = 20
+
+
+class EnrichmentSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FDP_ENRICHMENT__")
+
+    extract_entities: bool = False
+    max_entities_per_chunk: int = 20
+    max_relations_per_chunk: int = 15
+    max_attempts: int = 5  # Max retries per enrichment stage before permanent failure
+    # Video transcription (ASR) — turn reels/shorts/tiktok video bodies into
+    # searchable transcript text via Whisper, plus on-screen text via frame OCR.
+    transcribe_video: bool = True
+    transcribe_model: str = "whisper-large-v3-turbo"  # Groq Whisper model
+    ocr_video_frames: bool = True  # OCR sampled video frames for on-screen text
+    # SOCKS/HTTP proxy for media downloads from hosts the server's own IP can't
+    # reach (e.g. Instagram/TikTok CDNs that block datacenter IPs). Applied only
+    # to those platforms; everything else downloads directly. Use socks5h:// so
+    # DNS resolves on the proxy side. Empty = direct (no proxy).
+    media_proxy: str = ""
+    # Entity synthesis — Karpathy-style LLM-maintained wiki pages per entity.
+    synthesis_enabled: bool = True
+    synthesis_min_item_count: int = 3  # Don't synthesize entities mentioned in < N items
+    synthesis_threshold: int = 3  # Regen when item_count - synthesis_item_count >= N
+    synthesis_min_interval_hours: int = 24  # No more than once per entity per interval
+    synthesis_max_context_items: int = 20  # Cap evidence fed to the LLM per regen
+
+
+class EmailSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FDP_EMAIL__")
+
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    from_address: str = ""
+    from_name: str = "4dpocket"
+    # When smtp_host is empty the sender logs to stdout only.
+    # Self-hosters set FDP_EMAIL__SMTP_HOST (and friends) to enable real delivery.
+
+
 class ServerSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FDP_SERVER__")
 
     host: str = "0.0.0.0"
     port: int = 4040
+    public_url: str = "http://localhost:4040"  # Canonical public URL (used by MCP issuer/resource)
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:4040"]
     secure_cookies: bool = False  # Set True behind HTTPS in production
     trust_proxy: bool = False  # Set True when behind a reverse proxy (nginx, caddy, etc.)
+    json_logs: bool = False  # Set True to emit structured JSON log lines (e.g. for Loki/Datadog)
 
 
 class Settings(BaseSettings):
@@ -118,7 +197,10 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     ai: AISettings = Field(default_factory=AISettings)
+    rerank: RerankSettings = Field(default_factory=RerankSettings)
+    enrichment: EnrichmentSettings = Field(default_factory=EnrichmentSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
+    email: EmailSettings = Field(default_factory=EmailSettings)
 
     @model_validator(mode="after")
     def validate_search_db_compat(self) -> "Settings":

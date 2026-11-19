@@ -35,7 +35,8 @@ export async function apiFetch(
   // Auto-redirect to login on 401 (except for auth endpoints)
   if (res.status === 401 && !url.includes("/auth/")) {
     clearLoggedIn();
-    window.location.href = "/login";
+    const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `/login?returnTo=${returnTo}`;
   }
 
   return res;
@@ -81,9 +82,19 @@ export const api = {
     return res.json();
   },
 
-  async del(url: string): Promise<void> {
-    const res = await apiFetch(url, { method: "DELETE" });
-    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+  async del(url: string, body?: unknown): Promise<void> {
+    const res = await apiFetch(url, {
+      method: "DELETE",
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      let detail = `${res.status}: ${res.statusText}`;
+      try {
+        const err = await res.json();
+        if (err?.detail) detail = typeof err.detail === "string" ? err.detail : detail;
+      } catch {}
+      throw new Error(detail);
+    }
   },
 
   async login(identifier: string, password: string): Promise<void> {

@@ -1,16 +1,97 @@
 """Admin management endpoints."""
 
+import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlalchemy import func
+from sqlmodel import Session, or_, select
 
-from fourdpocket.api.deps import get_db, get_or_create_settings, require_admin
+from fourdpocket.api.deps import (
+    get_db,
+    get_or_create_settings,
+    require_admin,
+    require_jwt_session,
+)
+from fourdpocket.models.api_token import ApiToken, ApiTokenCollection
 from fourdpocket.models.base import UserRole
+from fourdpocket.models.collection import Collection
+from fourdpocket.models.entity import Entity
+from fourdpocket.models.item import KnowledgeItem
+from fourdpocket.models.quota import UserQuota
+from fourdpocket.models.tag import Tag
 from fourdpocket.models.user import User, UserRead
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+@router.get("/stats")
+def instance_stats(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """System-wide analytics: counts of key entities, storage on disk, worker queue status."""
+    def _count(model) -> int:
+        return db.exec(select(func.count()).select_from(model)).one()
+
+    user_total = _count(User)
+    active_users = db.exec(
+        select(func.count()).select_from(User).where(User.is_active.is_(True))
+    ).one()
+
+    # Huey queue depth (SQLite backend). Failure = 0, not fatal.
+    queue_depth = 0
+    worker_alive = False
+    try:
+        import sqlite3
+
+        db_path = os.path.join(os.getcwd(), "data", "huey_tasks.db")
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            try:
+                cur = conn.execute("SELECT COUNT(*) FROM task")
+                queue_depth = cur.fetchone()[0] or 0
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["pgrep", "-f", "fourdpocket.workers.huey_worker"],
+            capture_output=True, text=True, timeout=2,
+        )
+        worker_alive = bool(out.stdout.strip())
+    except Exception:
+        pass
+
+    # Best-effort storage usage (data directory).
+    storage_bytes = 0
+    try:
+        data_dir = os.path.join(os.getcwd(), "data")
+        for root, _dirs, files in os.walk(data_dir):
+            for fname in files:
+                try:
+                    storage_bytes += os.path.getsize(os.path.join(root, fname))
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+    return {
+        "users_total": user_total,
+        "users_active": active_users,
+        "items_total": _count(KnowledgeItem),
+        "collections_total": _count(Collection),
+        "tags_total": _count(Tag),
+        "entities_total": _count(Entity),
+        "storage_bytes": storage_bytes,
+        "queue_depth": queue_depth,
+        "worker_alive": worker_alive,
+    }
 
 
 @router.get("/users", response_model=list[UserRead])
@@ -48,12 +129,25 @@ def update_user(
     data: AdminUserUpdate,
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
 ):
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.id == admin.id and data.role and data.role != UserRole.admin:
         raise HTTPException(status_code=400, detail="Cannot demote yourself")
+
+    # Prevent demoting the last admin — would lock everyone out.
+    if data.role and data.role != UserRole.admin and user.role == UserRole.admin:
+        remaining_admins = db.exec(
+            select(func.count()).select_from(User).where(
+                User.role == UserRole.admin, User.id != user.id
+            )
+        ).one()
+        if remaining_admins == 0:
+            raise HTTPException(
+                status_code=409, detail="Cannot demote the last admin"
+            )
 
     update_dict = data.model_dump(exclude_unset=True)
     for key, value in update_dict.items():
@@ -69,6 +163,7 @@ def delete_user(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
 ):
     user = db.get(User, user_id)
     if not user:
@@ -88,8 +183,8 @@ def delete_user(
     from fourdpocket.models.item_link import ItemLink
     from fourdpocket.models.note import Note
     from fourdpocket.models.note_tag import NoteTag
-    from fourdpocket.models.rule import Rule
     from fourdpocket.models.rss_feed import RSSFeed
+    from fourdpocket.models.rule import Rule
     from fourdpocket.models.saved_filter import SavedFilter
     from fourdpocket.models.share import Share, ShareRecipient
     from fourdpocket.models.tag import ItemTag, Tag
@@ -163,7 +258,12 @@ def delete_user(
         db.delete(row)
     for row in db.exec(select(SavedFilter).where(SavedFilter.user_id == uid)).all():
         db.delete(row)
-    for row in db.exec(select(KnowledgeFeed).where(KnowledgeFeed.user_id == uid)).all():
+    # KnowledgeFeed has no user_id — delete rows where user is subscriber OR publisher.
+    for row in db.exec(
+        select(KnowledgeFeed).where(
+            or_(KnowledgeFeed.subscriber_id == uid, KnowledgeFeed.publisher_id == uid)
+        )
+    ).all():
         db.delete(row)
     # Also delete comments on others' items
     for row in db.exec(select(Comment).where(Comment.user_id == uid)).all():
@@ -180,8 +280,23 @@ def delete_user(
     except Exception:
         pass
 
+    # 8. Delete PAT collections and PATs for this user
+    for token in db.exec(select(ApiToken).where(ApiToken.user_id == uid)).all():
+        for atc in db.exec(
+            select(ApiTokenCollection).where(ApiTokenCollection.token_id == token.id)
+        ).all():
+            db.delete(atc)
+        db.delete(token)
+
     db.delete(user)
     db.commit()
+
+    # 9. Remove on-disk media (best-effort, after DB commit)
+    try:
+        from fourdpocket.storage.local import LocalStorage
+        LocalStorage().delete_user_dir(uid)
+    except Exception:
+        pass
 
 
 # ─── AI Settings (admin-controlled) ─────────────────────────────
@@ -245,6 +360,7 @@ def update_ai_settings(
     data: AISettingsUpdate,
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
 ):
     """Update AI settings (stored in InstanceSettings.extra['ai_config']).
 
@@ -284,6 +400,69 @@ def update_ai_settings(
     return masked
 
 
+# ─── Search Settings (admin-controlled) ─────────────────────────
+
+SEARCH_CONFIG_KEYS = {
+    "graph_ranker_enabled",
+    "graph_ranker_hop_decay",
+    "graph_ranker_top_k",
+}
+
+
+@router.get("/search-settings")
+def get_search_settings(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Get resolved search configuration (env defaults + admin overrides)."""
+    from fourdpocket.search.admin_config import get_resolved_search_config
+
+    return get_resolved_search_config()
+
+
+class SearchSettingsUpdate(BaseModel):
+    graph_ranker_enabled: bool | None = None
+    graph_ranker_hop_decay: float | None = None
+    graph_ranker_top_k: int | None = None
+
+
+@router.patch("/search-settings")
+def update_search_settings(
+    data: SearchSettingsUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
+):
+    """Update search settings (stored in InstanceSettings.extra['search_config']).
+
+    Admin panel settings take precedence over .env values.
+    """
+    settings = get_or_create_settings(db)
+    # Deep copy both layers so SQLAlchemy detects the JSON-column change.
+    extra = dict(settings.extra) if settings.extra else {}
+    search_config = dict(extra.get("search_config", {}))
+
+    update_dict = data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        if key in SEARCH_CONFIG_KEYS:
+            # Light validation on numeric bounds
+            if key == "graph_ranker_hop_decay" and value is not None:
+                value = max(0.0, min(1.0, float(value)))
+            if key == "graph_ranker_top_k" and value is not None:
+                value = max(1, min(500, int(value)))
+            search_config[key] = value
+
+    extra["search_config"] = search_config
+    settings.extra = extra
+    db.add(settings)
+    db.commit()
+    db.refresh(settings)
+
+    from fourdpocket.search.admin_config import get_resolved_search_config
+
+    return get_resolved_search_config()
+
+
 # ─── Instance Settings ──────────────────────────────────────────
 
 class InstanceSettingsRead(BaseModel):
@@ -316,6 +495,7 @@ def update_instance_settings(
     data: InstanceSettingsUpdate,
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
 ):
     settings = get_or_create_settings(db)
     update_dict = data.model_dump(exclude_unset=True)
@@ -325,3 +505,120 @@ def update_instance_settings(
     db.commit()
     db.refresh(settings)
     return settings
+
+
+# ─── Quota management (admin-only) ──────────────────────────────────────────
+
+
+class QuotaRead(BaseModel):
+    user_id: uuid.UUID
+    items_max: int | None
+    storage_bytes_max: int | None
+    daily_api_calls_max: int | None
+    daily_api_calls_used: int
+    items_used: int
+    storage_bytes_used: int
+
+    model_config = {"from_attributes": True}
+
+
+class QuotaUpdate(BaseModel):
+    items_max: int | None = None
+    storage_bytes_max: int | None = None
+    daily_api_calls_max: int | None = None
+
+
+@router.get("/quotas", response_model=list[QuotaRead])
+def list_quotas(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """List all user quota rows (admin only)."""
+    rows = db.exec(select(UserQuota).offset(offset).limit(limit)).all()
+    return rows
+
+
+@router.get("/quotas/{user_id}", response_model=QuotaRead)
+def get_quota(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Get quota for a specific user (admin only)."""
+    quota = db.get(UserQuota, user_id)
+    if quota is None:
+        raise HTTPException(status_code=404, detail="Quota not found for user")
+    return quota
+
+
+@router.patch("/quotas/{user_id}", response_model=QuotaRead)
+def update_quota(
+    user_id: uuid.UUID,
+    data: QuotaUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
+):
+    """Create or update quota for a user (admin only).
+
+    Creating a new quota row is idempotent — if no row exists it is created
+    with sensible defaults (all counters at 0).
+    """
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from fourdpocket.models.base import utc_now
+
+    quota = db.get(UserQuota, user_id)
+    if quota is None:
+        quota = UserQuota(user_id=user_id, daily_window_start=utc_now())
+        db.add(quota)
+        db.flush()
+
+    update_dict = data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(quota, key, value)
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+    return quota
+
+
+@router.post("/quotas/{user_id}/recompute", response_model=QuotaRead)
+def recompute_quota(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
+):
+    """Recompute items_used and storage_bytes_used from authoritative tables.
+
+    items_used   = COUNT(*) on knowledge_items WHERE user_id = user_id
+    storage_bytes_used is intentionally left as-is (no reliable byte-size
+    column on knowledge_items in the current schema). Extend when a
+    file_size_bytes column is available.
+    """
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from fourdpocket.models.base import utc_now
+
+    quota = db.get(UserQuota, user_id)
+    if quota is None:
+        quota = UserQuota(user_id=user_id, daily_window_start=utc_now())
+        db.add(quota)
+        db.flush()
+
+    items_count = db.exec(
+        select(func.count()).select_from(KnowledgeItem).where(KnowledgeItem.user_id == user_id)
+    ).one()
+
+    quota.items_used = items_count
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+    return quota

@@ -35,9 +35,11 @@ import {
   Tag,
   FileCode,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { PlatformIcon } from "@/components/common/PlatformIcon";
 import ContentRenderer from "@/components/content/ContentRenderer";
+import { SectionRenderer, type Section } from "@/components/content/SectionRenderer";
 import TextHighlighter from "@/components/content/TextHighlighter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -520,11 +522,15 @@ function getThumbnailGradient(platform: string): string {
 }
 
 
+// RFC 4122 UUID format (accepts any version/variant, case-insensitive)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default function ItemDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data: item, isLoading, isError } = useItem(id ?? "");
+  const validId = id && UUID_RE.test(id) ? id : "";
+  const { data: item, isLoading, isError } = useItem(validId);
   const updateItem = useUpdateItem();
   const deleteItem = useDeleteItem();
   const [shareOpen, setShareOpen] = useState(false);
@@ -536,7 +542,7 @@ export default function ItemDetail() {
   const addToCollection = useAddItemToCollection();
   const toggleReadingList = useToggleReadingList();
   const markAsRead = useMarkAsRead();
-  const { data: highlights } = useHighlights(id);
+  const { data: highlights } = useHighlights(validId || undefined);
 
   const commentInputRef = useRef<HTMLInputElement>(null);
 
@@ -547,9 +553,9 @@ export default function ItemDetail() {
     source_platform: string;
     score: number;
   }>>({
-    queryKey: ["items", id, "related"],
-    queryFn: () => api.get(`/api/v1/items/${id}/related`),
-    enabled: !!id,
+    queryKey: ["items", validId, "related"],
+    queryFn: () => api.get(`/api/v1/items/${validId}/related`),
+    enabled: !!validId,
   });
 
   const { data: itemTags } = useQuery<Array<{
@@ -559,9 +565,9 @@ export default function ItemDetail() {
     confidence: number;
     ai_generated: boolean;
   }>>({
-    queryKey: ["items", id, "tags"],
-    queryFn: () => api.get(`/api/v1/items/${id}/tags`),
-    enabled: !!id,
+    queryKey: ["items", validId, "tags"],
+    queryFn: () => api.get(`/api/v1/items/${validId}/tags`),
+    enabled: !!validId,
   });
 
   const { data: comments } = useQuery<Array<{
@@ -570,16 +576,16 @@ export default function ItemDetail() {
     user_display_name: string;
     created_at: string;
   }>>({
-    queryKey: ["items", id, "comments"],
-    queryFn: () => api.get(`/api/v1/items/${id}/comments`),
-    enabled: !!id,
+    queryKey: ["items", validId, "comments"],
+    queryFn: () => api.get(`/api/v1/items/${validId}/comments`),
+    enabled: !!validId,
   });
 
   const addComment = useMutation({
     mutationFn: (content: string) =>
-      api.post(`/api/v1/items/${id}/comments`, { content }),
+      api.post(`/api/v1/items/${validId}/comments`, { content }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["items", id, "comments"] });
+      qc.invalidateQueries({ queryKey: ["items", validId, "comments"] });
       setCommentText("");
     },
   });
@@ -590,7 +596,17 @@ export default function ItemDetail() {
     addComment.mutate(trimmed);
   };
 
-  if (isLoading) {
+  const [reprocessing, setReprocessing] = useState(false);
+  const handleReprocess = async () => {
+    if (!item?.url) return;
+    setReprocessing(true);
+    try {
+      await api.post(`/api/v1/items/${item.id}/reprocess`);
+    } catch {}
+    setTimeout(() => setReprocessing(false), 2000);
+  };
+
+  if (isLoading && validId) {
     return (
       <div className="animate-fade-in max-w-5xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
@@ -615,7 +631,7 @@ export default function ItemDetail() {
     );
   }
 
-  if (isError || !item) {
+  if (!validId || isError || !item) {
     return (
       <div className="animate-fade-in p-6 max-w-3xl mx-auto text-center py-16">
         <AlertCircle className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
@@ -623,11 +639,11 @@ export default function ItemDetail() {
           Item not found.
         </p>
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate("/")}
           className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:underline cursor-pointer"
         >
           <ArrowLeft className="h-4 w-4" />
-          Go back
+          Go to Dashboard
         </button>
       </div>
     );
@@ -656,7 +672,7 @@ export default function ItemDetail() {
 
   const handleDelete = async () => {
     await deleteItem.mutateAsync(item.id);
-    navigate(-1);
+    navigate("/");
   };
 
   const handleToggleFavorite = () => {
@@ -712,6 +728,21 @@ export default function ItemDetail() {
           <button onClick={() => setShareOpen(true)} aria-label="Share" className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-sky-600 transition-all duration-200 cursor-pointer">
             <Share2 className="h-4 w-4" />
           </button>
+          {item.url && (
+            <button
+              onClick={handleReprocess}
+              disabled={reprocessing}
+              aria-label="Refresh content"
+              title="Re-fetch and reprocess content"
+              className={`p-2 rounded-lg transition-all duration-200 cursor-pointer ${
+                reprocessing
+                  ? "bg-sky-50 dark:bg-sky-900/20 text-sky-600"
+                  : "hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-sky-600"
+              }`}
+            >
+              <RefreshCw className={`h-4 w-4 ${reprocessing ? "animate-spin" : ""}`} />
+            </button>
+          )}
           <button
             onClick={() => toggleReadingList.mutate({ id: item.id, type: "item", add: item.reading_status !== "reading_list" })}
             aria-label={item.reading_status === "reading_list" ? "Remove from Reading List" : "Add to Reading List"}
@@ -870,15 +901,31 @@ export default function ItemDetail() {
         </div>
       )}
 
-      {item.content && (
+      {/*
+        Section-aware rendering: when the processor emitted structured
+        sections (post + comments, transcript + chapters, Q&A, page-
+        paginated PDFs) we render them directly. Otherwise fall back to
+        the legacy flat content blob via ContentRenderer. Sections are
+        stashed in item_metadata._sections by workers/fetcher.py.
+      */}
+      {Array.isArray((metadata as Record<string, unknown>)._sections) &&
+      ((metadata as { _sections?: Section[] })._sections?.length ?? 0) > 0 ? (
         <TextHighlighter itemId={item.id} highlights={highlights}>
-          <ContentRenderer
-            content={item.content}
-            rawContent={item.raw_content}
-            sourceUrl={item.url}
-            sourcePlatform={item.source_platform}
+          <SectionRenderer
+            sections={(metadata as { _sections?: Section[] })._sections ?? []}
           />
         </TextHighlighter>
+      ) : (
+        item.content && (
+          <TextHighlighter itemId={item.id} highlights={highlights}>
+            <ContentRenderer
+              content={item.content}
+              rawContent={item.raw_content}
+              sourceUrl={item.url}
+              sourcePlatform={item.source_platform}
+            />
+          </TextHighlighter>
+        )
       )}
 
       {/* Reading list action */}
@@ -1001,7 +1048,7 @@ export default function ItemDetail() {
           </div>
         ) : (
           <p className="text-sm text-gray-400 dark:text-gray-500 italic">
-            No comments yet. Be the first!
+            No comments on this item.
           </p>
         )}
       </div>
@@ -1014,7 +1061,7 @@ export default function ItemDetail() {
       )}
 
       {editOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Edit item">
           <div
             className="absolute inset-0 bg-black/50 backdrop-blur-sm"
             onClick={() => setEditOpen(false)}
@@ -1070,6 +1117,7 @@ function ItemLinksSection({ itemId }: { itemId: string }) {
         </h2>
         <button
           onClick={() => setShowAdd(!showAdd)}
+          aria-label={showAdd ? "Cancel adding link" : "Add related link"}
           className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-sky-500 transition-colors"
         >
           <Plus className="w-4 h-4" />

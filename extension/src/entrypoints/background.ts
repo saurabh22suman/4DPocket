@@ -1,26 +1,25 @@
 import { setStorageAdapter, getStoredAuth } from "../core/api-client";
+import { createStorageAdapter } from "../core/storage-adapter";
+import { setBadgeText, setBadgeBackgroundColor } from "../core/action-adapter";
 import { saveItem, checkUrl } from "../core/items";
 import { createHighlight } from "../core/highlights";
 
 export default defineBackground(() => {
-  // Initialize storage adapter for Chrome (must happen before any core calls)
-  setStorageAdapter({
-    get: (keys) => chrome.storage.local.get(keys),
-    set: (items) => chrome.storage.local.set(items),
-    remove: (keys) => chrome.storage.local.remove(keys),
-  });
+  // Initialize storage adapter — prefers browser.storage.local (Firefox)
+  // over chrome.storage.local (Chrome MV3)
+  setStorageAdapter(createStorageAdapter());
 
   // --- Badge helpers ---
 
   function showBadge(text: string, color: string, tabId?: number) {
-    const opts: chrome.action.BadgeTextDetails = { text };
+    const opts = { text };
     if (tabId !== undefined) opts.tabId = tabId;
-    chrome.action.setBadgeText(opts);
-    chrome.action.setBadgeBackgroundColor({ color, ...(tabId !== undefined ? { tabId } : {}) });
+    setBadgeText(opts);
+    setBadgeBackgroundColor({ color, ...(tabId !== undefined ? { tabId } : {}) });
     setTimeout(() => {
-      const clearOpts: chrome.action.BadgeTextDetails = { text: "" };
+      const clearOpts = { text: "" };
       if (tabId !== undefined) clearOpts.tabId = tabId;
-      chrome.action.setBadgeText(clearOpts);
+      setBadgeText(clearOpts);
     }, 2000);
   }
 
@@ -64,13 +63,25 @@ export default defineBackground(() => {
 
   // --- Feature 5: Content script highlight messages ---
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Only accept messages from our own extension's content scripts
+    if (!sender.id || sender.id !== chrome.runtime.id) {
+      sendResponse({ status: "error", message: "Unauthorized sender" });
+      return false;
+    }
     if (message.type === "SAVE_HIGHLIGHT") {
+      if (!message.data?.url || !message.data?.text) {
+        sendResponse({ status: "error", message: "Missing required fields" });
+        return false;
+      }
       handleSaveHighlight(message.data).then(
         (result) => sendResponse({ status: "success", data: result }),
-        (err) => sendResponse({ status: "error", message: err.message })
+        () => sendResponse({ status: "error", message: "Failed to save highlight" })
       );
       return true; // Keep message channel open for async response
+    } else {
+      sendResponse({ status: "error", message: `unknown message type: ${message?.type}` });
+      return false;
     }
   });
 
@@ -127,9 +138,14 @@ export default defineBackground(() => {
 
   // --- Feature 4: Auto-detect already saved (badge on navigation) ---
 
+  // Track tabs that currently show a transient "?" badge so we can clear it
+  // on the next successful update rather than leaving it indefinitely.
+  const transientBadgeTabs = new Set<number>();
+
   async function updateBadgeForTab(tabId: number, url: string) {
     if (!url.startsWith("http")) {
-      chrome.action.setBadgeText({ text: "", tabId });
+      setBadgeText({ text: "", tabId });
+      transientBadgeTabs.delete(tabId);
       return;
     }
 
@@ -138,14 +154,21 @@ export default defineBackground(() => {
       if (!serverUrl || !token) return;
 
       const result = await checkUrl(url);
+      // Success path — clear any lingering "?" badge first
+      transientBadgeTabs.delete(tabId);
       if (result.exists) {
-        chrome.action.setBadgeText({ text: "\u2713", tabId });
-        chrome.action.setBadgeBackgroundColor({ color: "#16a34a", tabId });
+        setBadgeText({ text: "\u2713", tabId });
+        setBadgeBackgroundColor({ color: "#16a34a", tabId });
       } else {
-        chrome.action.setBadgeText({ text: "", tabId });
+        setBadgeText({ text: "", tabId });
       }
-    } catch {
-      // Silently ignore - badge is a nice-to-have
+    } catch (err) {
+      // Network error / 5xx / auth error — log and show "?" with gray.
+      // Mark this tab so the badge is cleared on the next success.
+      console.warn("[4dp] badge update failed", err);
+      transientBadgeTabs.add(tabId);
+      setBadgeText({ text: "?", tabId });
+      setBadgeBackgroundColor({ color: "#6b7280", tabId });
     }
   }
 
@@ -162,5 +185,5 @@ export default defineBackground(() => {
     }
   });
 
-  console.log("4DPocket background service worker loaded");
+  // Background service worker ready
 });

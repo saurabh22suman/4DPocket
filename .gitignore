@@ -53,8 +53,13 @@ Thumbs.db
 Desktop.ini
 ._*
 
+# App runtime
+.pids/
+logs/
+
 # OMC / Claude / Playwright
 .omc/
+.omx/
 .playwright-mcp/
 design-system/
 
@@ -68,6 +73,28 @@ pnpm-debug.log*
 # Test artifacts
 test-results/
 playwright-report/
+ui-test-screenshots/
+**/test-screenshots/
+*.screenshot.png
+screenshots/
+
+# Local plans / scratch
+PLAN.md
+plans/
+.plans/
+*.scratch
+*.scratch.*
+MEMORY/
+tmp/
+/src/public/
+
+# Credentials / keys (defense in depth — .env already covered)
+*.pem
+*.key
+secrets.json
+secrets.yaml
+credentials.json
+.credentials/
 
 # Internal audit docs (not for public repo)
 docs/SECURITY_AUDIT_*.md

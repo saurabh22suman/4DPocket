@@ -2,12 +2,24 @@
 
 import json
 import logging
+import re
 
 from openai import OpenAI
 
 from fourdpocket.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think(content: str) -> str:
+    """Remove <think>...</think> reasoning blocks emitted by reasoning models."""
+    content = _THINK_RE.sub("", content)
+    # Truncated/unclosed reasoning block: drop everything from the opening tag.
+    if "<think>" in content:
+        content = content.split("<think>", 1)[0]
+    return content.strip()
 
 PROVIDER_CONFIGS = {
     "ollama": {
@@ -46,14 +58,18 @@ class OpenAICompatibleProvider:
         base_url = config["base_url"]
 
         if provider == "ollama":
-            base_url = f"{settings.ai.ollama_url}/v1"
+            base_url = f"{settings.ai.ollama_url.rstrip('/')}/v1"
             api_key = "ollama"
             self._model = settings.ai.ollama_model
         elif provider == "groq":
             api_key = ov.get("groq_api_key") or settings.ai.groq_api_key
+            if not api_key:
+                raise RuntimeError("groq chat provider requires api_key")
             self._model = config["default_model"]
         elif provider == "nvidia":
             api_key = ov.get("nvidia_api_key") or settings.ai.nvidia_api_key
+            if not api_key:
+                raise RuntimeError("nvidia chat provider requires api_key")
             self._model = config["default_model"]
         elif provider == "custom":
             base_url = ov.get("custom_base_url") or settings.ai.custom_base_url
@@ -115,8 +131,11 @@ class OpenAICompatibleProvider:
             # Anthropic returns content as array of blocks
             content_blocks = data.get("content", [])
             return "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+        except httpx.HTTPStatusError as e:
+            logger.warning("Anthropic call failed: status=%s", e.response.status_code)
+            return ""
         except Exception as e:
-            logger.warning("Anthropic API call failed (%s): %s", self._provider, e)
+            logger.warning("Anthropic API call failed (%s): %s", self._provider, type(e).__name__)
             return ""
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
@@ -137,7 +156,7 @@ class OpenAICompatibleProvider:
                 max_tokens=2000,
                 timeout=30,
             )
-            return response.choices[0].message.content or ""
+            return _strip_think(response.choices[0].message.content or "")
         except Exception as e:
             logger.warning("Chat generation failed (%s): %s", self._provider, e)
             return ""
@@ -180,7 +199,7 @@ class OpenAICompatibleProvider:
 
 def _parse_json(content: str) -> dict:
     """Parse JSON from LLM response, handling markdown code blocks."""
-    content = content.strip()
+    content = _strip_think(content)
     if content.startswith("```"):
         content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
     try:

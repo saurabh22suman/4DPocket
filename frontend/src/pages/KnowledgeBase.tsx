@@ -130,6 +130,7 @@ export default function KnowledgeBase() {
             onClick={handleRefresh}
             className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-all cursor-pointer"
             title="Refresh"
+            aria-label="Refresh"
           >
             <RefreshCw className={`h-4 w-4 text-gray-500 ${refreshing ? "animate-spin" : ""}`} />
           </button>
@@ -217,7 +218,7 @@ export default function KnowledgeBase() {
             No items found
           </p>
           <p className="text-gray-400 dark:text-gray-500 text-sm">
-            {platform !== "All" ? `No ${platform} items yet. Try a different platform filter.` : "Try a different filter or add some content."}
+            {platform !== "All" ? `No ${platform} items found. Try a different platform filter.` : "Try a different filter or add some content."}
           </p>
         </div>
       ) : (

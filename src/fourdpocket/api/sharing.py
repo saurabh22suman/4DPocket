@@ -1,5 +1,6 @@
 """Sharing API endpoints."""
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -7,7 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.ai.sanitizer import strip_html
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
+
+_logger = logging.getLogger(__name__)
 from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.share import Share, ShareRecipient, ShareRecipientRole, ShareType
 from fourdpocket.models.tag import ItemTag, Tag
@@ -19,10 +23,23 @@ from fourdpocket.sharing.share_manager import (
     validate_public_token,
 )
 
-router = APIRouter(prefix="/shares", tags=["sharing"])
+router = APIRouter(prefix="/shares", tags=["Sharing"])
 
 
 # --- Schemas ---
+
+
+class PublicItemResponse(BaseModel):
+    id: str
+    title: str | None
+    url: str | None
+    description: str | None
+    content: str | None
+    summary: str | None
+    source_platform: str | None
+    created_at: str | None
+    tags: list[str]
+    owner_display_name: str
 
 
 class ShareCreate(BaseModel):
@@ -100,6 +117,7 @@ def create_share_endpoint(
     body: ShareCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     try:
         share = create_share(
@@ -120,7 +138,9 @@ def create_share_endpoint(
             select(User).where(User.email == body.recipient_email)
         ).first()
         if not recipient_user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            # Do not reveal whether the email is registered — return the share silently
+            _logger.warning("Share invite: no account for email (not revealed to client)")
+            return share
         if recipient_user.id == current_user.id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot share with yourself")
         existing = db.exec(
@@ -163,6 +183,7 @@ def revoke_share_endpoint(
     share_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     success = revoke_share(db=db, share_id=share_id, owner_id=current_user.id)
     if not success:
@@ -181,6 +202,7 @@ def add_recipient_endpoint(
     body: RecipientAdd,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     share = db.get(Share, share_id)
     if not share or share.owner_id != current_user.id:
@@ -201,6 +223,7 @@ def remove_recipient_endpoint(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     share = db.get(Share, share_id)
     if not share or share.owner_id != current_user.id:
@@ -272,6 +295,14 @@ def accept_share(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Share invitation not found"
         )
+    # Check share hasn't expired
+    share = db.get(Share, share_id)
+    if share and share.expires_at:
+        from datetime import datetime, timezone
+        if share.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE, detail="Share invitation has expired"
+            )
     recipient.accepted = True
     db.add(recipient)
     db.commit()
@@ -329,10 +360,10 @@ def share_history(
 
 # Public link access - no authentication required
 
-public_router = APIRouter(prefix="/public", tags=["sharing"])
+public_router = APIRouter(prefix="/public", tags=["Sharing"])
 
 
-@public_router.get("/{token}")
+@public_router.get("/{token}", response_model=PublicItemResponse)
 def get_public_share(
     token: str,
     request: Request,
@@ -349,36 +380,32 @@ def get_public_share(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Public share not found or expired",
         )
-    if share.item_id:
-        item = db.get(KnowledgeItem, share.item_id)
-        if not item:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shared item not found")
-        tag_links = db.exec(select(ItemTag).where(ItemTag.item_id == item.id)).all()
-        tag_ids = [tl.tag_id for tl in tag_links]
-        tags = db.exec(select(Tag).where(Tag.id.in_(tag_ids))).all() if tag_ids else []
-        owner = db.get(User, item.user_id)
-        import re as _re
-        def _strip_html(text: str | None) -> str | None:
-            if not text:
-                return text
-            return _re.sub(r"<[^>]+>", "", text)
+    # Only item shares are served publicly — reject others to prevent metadata leakage
+    if not share.item_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Public share not found")
 
-        return {
-            "id": str(item.id),
-            "title": _strip_html(item.title),
-            "url": item.url,
-            "description": _strip_html(item.description),
-            "content": _strip_html(item.content),
-            "summary": _strip_html(item.summary),
-            "source_platform": item.source_platform,
-            "created_at": item.created_at.isoformat() if item.created_at else None,
-            "tags": [t.name for t in tags],
-            "owner_display_name": owner.display_name or owner.username if owner else "Unknown",
-        }
-    return PublicShareRead(
-        share_type=share.share_type,
-        item_id=share.item_id,
-        collection_id=share.collection_id,
-        tag_id=share.tag_id,
-        created_at=share.created_at,
+    item = db.get(KnowledgeItem, share.item_id)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shared item not found")
+    tag_links = db.exec(select(ItemTag).where(ItemTag.item_id == item.id)).all()
+    tag_ids = [tl.tag_id for tl in tag_links]
+    tags = db.exec(select(Tag).where(Tag.id.in_(tag_ids))).all() if tag_ids else []
+    owner = db.get(User, item.user_id)
+
+    # Sanitize the URL: reject javascript: scheme to prevent XSS via URL fields
+    safe_url = item.url
+    if safe_url and safe_url.strip().lower().startswith("javascript:"):
+        safe_url = None
+
+    return PublicItemResponse(
+        id=str(item.id),
+        title=strip_html(item.title),
+        url=safe_url,
+        description=strip_html(item.description),
+        content=strip_html(item.content),
+        summary=strip_html(item.summary),
+        source_platform=item.source_platform,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        tags=[t.name for t in tags],
+        owner_display_name=(owner.display_name or owner.username) if owner else "Unknown",
     )

@@ -1,5 +1,5 @@
-import { Shield, Users, Settings as SettingsIcon, Loader2, UserX, UserCheck, ShieldX, Sparkles, Eye, EyeOff } from "lucide-react";
-import { useState, useRef } from "react";
+import { Shield, Users, Settings as SettingsIcon, Loader2, UserX, UserCheck, ShieldX, Sparkles, Eye, EyeOff, Activity, Database, HardDrive, Tag as TagIcon, FolderOpen, FileText, Users as UsersIcon } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -41,9 +41,15 @@ interface AIConfig {
   sync_enrichment: boolean;
 }
 
+interface SearchConfig {
+  graph_ranker_enabled: boolean;
+  graph_ranker_hop_decay: number;
+  graph_ranker_top_k: number;
+}
+
 export default function Admin() {
   const navigate = useNavigate();
-  const { data: currentUser } = useCurrentUser();
+  const { data: currentUser, isLoading: currentUserLoading } = useCurrentUser();
 
   // All hooks called unconditionally before any returns (React rules of hooks)
   const qc = useQueryClient();
@@ -77,11 +83,51 @@ export default function Admin() {
     enabled: !!currentUser && currentUser.role === "admin",
   });
 
+  interface InstanceStats {
+    users_total: number;
+    users_active: number;
+    items_total: number;
+    collections_total: number;
+    tags_total: number;
+    entities_total: number;
+    storage_bytes: number;
+    queue_depth: number;
+    worker_alive: boolean;
+  }
+
+  const { data: stats, isLoading: statsLoading } = useQuery<InstanceStats>({
+    queryKey: ["admin", "stats"],
+    queryFn: () => api.get("/api/v1/admin/stats"),
+    enabled: !!currentUser && currentUser.role === "admin",
+    refetchInterval: 30000,
+  });
+
   const updateAI = useMutation({
     mutationFn: (data: Partial<AIConfig>) =>
       api.patch("/api/v1/admin/ai-settings", data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "ai-settings"] }),
   });
+
+  const { data: searchConfig } = useQuery<SearchConfig>({
+    queryKey: ["admin", "search-settings"],
+    queryFn: () => api.get("/api/v1/admin/search-settings"),
+    enabled: !!currentUser && currentUser.role === "admin",
+  });
+
+  const updateSearch = useMutation({
+    mutationFn: (data: Partial<SearchConfig>) =>
+      api.patch("/api/v1/admin/search-settings", data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "search-settings"] }),
+  });
+
+  // Show nothing while the current user is still being fetched
+  if (currentUserLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
+      </div>
+    );
+  }
 
   // Role guard: redirect non-admins
   if (currentUser && currentUser.role !== "admin") {
@@ -109,6 +155,36 @@ export default function Admin() {
       <div className="flex items-center gap-3 mb-6">
         <Shield className="w-6 h-6 text-sky-600" />
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Admin Panel</h1>
+      </div>
+
+      {/* Analytics */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm p-6 mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Activity className="w-5 h-5 text-sky-600" />
+          <h2 className="font-bold text-gray-900 dark:text-gray-100">Analytics</h2>
+          {statsLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
+        </div>
+        {stats ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard icon={<UsersIcon className="w-4 h-4" />} label="Users" value={`${stats.users_active}/${stats.users_total}`} hint="active / total" />
+            <StatCard icon={<Database className="w-4 h-4" />} label="Items" value={stats.items_total.toLocaleString()} />
+            <StatCard icon={<FolderOpen className="w-4 h-4" />} label="Collections" value={stats.collections_total.toLocaleString()} />
+            <StatCard icon={<TagIcon className="w-4 h-4" />} label="Tags" value={stats.tags_total.toLocaleString()} />
+            <StatCard icon={<FileText className="w-4 h-4" />} label="Entities" value={stats.entities_total.toLocaleString()} />
+            <StatCard icon={<HardDrive className="w-4 h-4" />} label="Storage" value={formatBytes(stats.storage_bytes)} hint="data/ on disk" />
+            <StatCard
+              icon={<Activity className={`w-4 h-4 ${stats.worker_alive ? "text-green-500" : "text-red-500"}`} />}
+              label="Worker"
+              value={stats.worker_alive ? "Running" : "Stopped"}
+              hint={stats.worker_alive ? undefined : "No Huey processes detected"}
+            />
+            <StatCard icon={<Database className="w-4 h-4" />} label="Queue" value={stats.queue_depth.toString()} hint="pending tasks" />
+          </div>
+        ) : statsLoading ? (
+          <div className="flex items-center gap-2 text-gray-400"><Loader2 className="w-4 h-4 animate-spin" /> Loading stats...</div>
+        ) : (
+          <p className="text-sm text-gray-500 dark:text-gray-400">Stats unavailable.</p>
+        )}
       </div>
 
       {/* Instance Settings */}
@@ -171,6 +247,9 @@ export default function Admin() {
       {/* AI Configuration */}
       <AIConfigSection config={aiConfig} onUpdate={(data) => updateAI.mutate(data)} />
 
+      {/* Search Configuration */}
+      <SearchConfigSection config={searchConfig} onUpdate={(data) => updateSearch.mutate(data)} />
+
       {/* Users Table */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm p-6">
         <div className="flex items-center gap-2 mb-4">
@@ -209,6 +288,7 @@ export default function Admin() {
                         : "text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
                     }`}
                     title={user.is_active ? "Deactivate" : "Activate"}
+                    aria-label={user.is_active ? "Deactivate user" : "Activate user"}
                   >
                     {user.is_active ? <UserCheck className="w-4 h-4" /> : <UserX className="w-4 h-4" />}
                   </button>
@@ -227,6 +307,37 @@ export default function Admin() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 p-3">
+      <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 mb-1">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="text-lg font-bold text-gray-900 dark:text-gray-100">{value}</div>
+      {hint && <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">{hint}</div>}
     </div>
   );
 }
@@ -250,12 +361,12 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
 
   // Sync local config from server config on load
   const prevConfig = useRef(config);
-  if (config && !localConfig && config !== prevConfig.current) {
-    prevConfig.current = config;
-  }
-  if (config && !localConfig) {
-    setLocalConfig({ ...config });
-  }
+  useEffect(() => {
+    if (config && !localConfig) {
+      prevConfig.current = config;
+      setLocalConfig({ ...config });
+    }
+  }, [config, localConfig]);
 
   if (!config) return null;
   const effective = localConfig || config;
@@ -345,7 +456,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
                 placeholder="gsk_..."
                 className="w-full text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 pr-10"
               />
-              <button onClick={() => toggleKey("groq")} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
+              <button onClick={() => toggleKey("groq")} aria-label={showKeys.groq ? "Hide API key" : "Show API key"} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
                 {showKeys.groq ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
@@ -364,7 +475,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
                 placeholder="nvapi-..."
                 className="w-full text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 pr-10"
               />
-              <button onClick={() => toggleKey("nvidia")} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
+              <button onClick={() => toggleKey("nvidia")} aria-label={showKeys.nvidia ? "Hide API key" : "Show API key"} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
                 {showKeys.nvidia ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
@@ -406,7 +517,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
                   placeholder="sk-..."
                   className="w-full text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 pr-10"
                 />
-                <button onClick={() => toggleKey("custom")} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
+                <button onClick={() => toggleKey("custom")} aria-label={showKeys.custom ? "Hide API key" : "Show API key"} className="absolute right-2 top-1.5 text-gray-400 cursor-pointer">
                   {showKeys.custom ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
@@ -436,6 +547,9 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
             <p className="text-xs text-gray-500 dark:text-gray-400">Automatically tag items with AI</p>
           </div>
           <button
+            role="switch"
+            aria-checked={effective.auto_tag}
+            aria-label="Auto-tag"
             onClick={() => updateLocal({ auto_tag: !effective.auto_tag })}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 cursor-pointer ${
               effective.auto_tag ? "bg-sky-600" : "bg-gray-200 dark:bg-gray-700"
@@ -454,6 +568,9 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
             <p className="text-xs text-gray-500 dark:text-gray-400">Generate summaries for new items</p>
           </div>
           <button
+            role="switch"
+            aria-checked={effective.auto_summarize}
+            aria-label="Auto-summarize"
             onClick={() => updateLocal({ auto_summarize: !effective.auto_summarize })}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 cursor-pointer ${
               effective.auto_summarize ? "bg-sky-600" : "bg-gray-200 dark:bg-gray-700"
@@ -472,6 +589,9 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
             <p className="text-xs text-gray-500 dark:text-gray-400">Run AI inline when background worker is not running</p>
           </div>
           <button
+            role="switch"
+            aria-checked={effective.sync_enrichment}
+            aria-label="Sync enrichment"
             onClick={() => updateLocal({ sync_enrichment: !effective.sync_enrichment })}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 cursor-pointer ${
               effective.sync_enrichment ? "bg-sky-600" : "bg-gray-200 dark:bg-gray-700"
@@ -516,6 +636,142 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
             <button
               onClick={handleDiscard}
               className="px-5 py-2 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              Discard
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SearchConfigSection({ config, onUpdate }: { config?: SearchConfig; onUpdate: (data: Partial<SearchConfig>) => void }) {
+  const [localConfig, setLocalConfig] = useState<SearchConfig | null>(null);
+  const effective = localConfig ?? config;
+  const isDirty = localConfig !== null && JSON.stringify(localConfig) !== JSON.stringify(config);
+
+  const updateLocal = (patch: Partial<SearchConfig>) => {
+    setLocalConfig({ ...(effective as SearchConfig), ...patch });
+  };
+
+  const handleSave = () => {
+    if (!localConfig || !config) return;
+    const changed: Partial<SearchConfig> = {};
+    (Object.keys(localConfig) as (keyof SearchConfig)[]).forEach((k) => {
+      if (localConfig[k] !== config[k]) {
+        (changed as Record<string, unknown>)[k] = localConfig[k];
+      }
+    });
+    if (Object.keys(changed).length > 0) {
+      onUpdate(changed);
+      setLocalConfig(null);
+    }
+  };
+
+  if (!effective) {
+    return (
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <SettingsIcon className="w-5 h-5 text-sky-600" />
+          <h2 className="font-bold text-gray-900 dark:text-gray-100">Search Configuration</h2>
+        </div>
+        <div className="h-24 animate-pulse bg-gray-100 dark:bg-gray-800 rounded-lg" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm p-6">
+      <div className="flex items-center gap-2 mb-4">
+        <SettingsIcon className="w-5 h-5 text-sky-600" />
+        <h2 className="font-bold text-gray-900 dark:text-gray-100">Search Configuration</h2>
+        <span className="ml-auto text-xs text-gray-500 dark:text-gray-400">Admin overrides .env</span>
+      </div>
+
+      <div className="space-y-4">
+        {/* Section header */}
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-3">Graph-Anchored Ranker</p>
+        </div>
+
+        {/* Enable toggle */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Enable graph ranker</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Rank items by matching entities and 1-hop relations alongside keyword and vector search.
+              No-op until entity extraction has populated the concept graph.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={effective.graph_ranker_enabled}
+            aria-label="Enable graph ranker"
+            onClick={() => updateLocal({ graph_ranker_enabled: !effective.graph_ranker_enabled })}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 cursor-pointer ${
+              effective.graph_ranker_enabled ? "bg-sky-600" : "bg-gray-200 dark:bg-gray-700"
+            }`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${
+              effective.graph_ranker_enabled ? "translate-x-6" : "translate-x-1"
+            }`} />
+          </button>
+        </div>
+
+        {/* Hop decay */}
+        <div className="flex items-center justify-between">
+          <div className="flex-1 pr-4">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Hop decay</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Neighbor contribution multiplier (0.0 = seeds only, 1.0 = neighbors fully weighted)
+            </p>
+          </div>
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={effective.graph_ranker_hop_decay}
+            onChange={(e) => updateLocal({ graph_ranker_hop_decay: parseFloat(e.target.value) })}
+            className="w-24 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5"
+          />
+        </div>
+
+        {/* Top k */}
+        <div className="flex items-center justify-between">
+          <div className="flex-1 pr-4">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Top K</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Max items returned by the graph ranker before fusion</p>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            step={10}
+            value={effective.graph_ranker_top_k}
+            onChange={(e) => updateLocal({ graph_ranker_top_k: parseInt(e.target.value, 10) })}
+            className="w-24 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5"
+          />
+        </div>
+
+        {/* Save / Discard */}
+        <div className="flex justify-end gap-2 pt-4 border-t border-gray-100 dark:border-gray-800">
+          <button
+            onClick={handleSave}
+            disabled={!isDirty}
+            className={`px-4 py-2 text-sm font-medium rounded-lg ${
+              isDirty
+                ? "bg-sky-600 text-white hover:bg-sky-700 cursor-pointer"
+                : "bg-gray-100 dark:bg-gray-800 text-gray-400 cursor-not-allowed"
+            }`}
+          >
+            Save
+          </button>
+          {isDirty && (
+            <button
+              onClick={() => setLocalConfig(null)}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 cursor-pointer"
             >
               Discard
             </button>

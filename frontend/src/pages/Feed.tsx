@@ -125,9 +125,9 @@ function KnowledgeFeedTab() {
   if (!items?.length) {
     return (
       <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-        <Rss className="w-12 h-12 text-[#0096C7]/20 dark:text-sky-900 mx-auto mb-4" />
-        <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">No feed items yet</p>
-        <p className="text-sm text-gray-400 dark:text-gray-500">Follow other users to see their public knowledge here</p>
+        <Rss className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+        <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">No feed items</p>
+        <p className="text-sm text-gray-400 dark:text-gray-500">Follow other users or add RSS feeds to populate this page.</p>
       </div>
     );
   }
@@ -199,8 +199,8 @@ function ManageFeedsTab({ onReview }: { onReview: (feedId: string) => void }) {
       ) : !feeds?.length ? (
         <div className="text-center py-12 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
           <Rss className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-          <p className="text-gray-500 dark:text-gray-400 text-sm">No feeds configured yet</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Add an RSS, Atom, or JSON feed to get started</p>
+          <p className="text-gray-500 dark:text-gray-400 text-sm">No feeds configured</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Add an RSS, Atom, or JSON feed URL above.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -239,7 +239,7 @@ function FeedCard({ feed, onReview }: { feed: FeedType; onReview: (feedId: strin
           <p className="text-xs text-gray-400 dark:text-gray-500 truncate mb-2">{feed.url}</p>
           <div className="flex flex-wrap items-center gap-2">
             <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${formatBadgeClass}`}>
-              {feed.format.toUpperCase()}
+              {(feed.format ?? "rss").toUpperCase()}
             </span>
             <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
               feed.mode === "auto"
@@ -269,6 +269,7 @@ function FeedCard({ feed, onReview }: { feed: FeedType; onReview: (feedId: strin
               onClick={() => onReview(feed.id)}
               className="p-2 rounded-lg text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors cursor-pointer"
               title="Review pending entries"
+              aria-label="Review pending entries"
             >
               <ListFilter className="w-4 h-4" />
             </button>
@@ -278,6 +279,7 @@ function FeedCard({ feed, onReview }: { feed: FeedType; onReview: (feedId: strin
             disabled={deleteFeed.isPending}
             className="p-2 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors cursor-pointer disabled:opacity-50"
             title="Delete feed"
+            aria-label="Delete feed"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -517,6 +519,7 @@ function ApprovalQueue({ feedId, onBack }: { feedId: string; onBack: () => void 
                     disabled={approveMut.isPending}
                     className="p-2 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors cursor-pointer disabled:opacity-50"
                     title="Approve"
+                    aria-label="Approve feed entry"
                   >
                     <Check className="w-4 h-4" />
                   </button>
@@ -525,6 +528,7 @@ function ApprovalQueue({ feedId, onBack }: { feedId: string; onBack: () => void 
                     disabled={rejectMut.isPending}
                     className="p-2 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors cursor-pointer disabled:opacity-50"
                     title="Reject"
+                    aria-label="Reject feed entry"
                   >
                     <X className="w-4 h-4" />
                   </button>

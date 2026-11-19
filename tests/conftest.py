@@ -20,10 +20,11 @@ def test_engine():
     SQLModel.metadata.create_all(engine)
 
     # Initialize FTS5 table for search tests
-    from fourdpocket.search.sqlite_fts import init_fts
+    from fourdpocket.search.sqlite_fts import init_chunks_fts, init_fts
 
     with Session(engine) as session:
         init_fts(session)
+        init_chunks_fts(session)
 
     yield engine
     engine.dispose()
@@ -33,6 +34,97 @@ def test_engine():
 def test_db(engine):
     with Session(engine) as session:
         yield session
+
+
+@pytest.fixture(autouse=True)
+def reset_search_singleton():
+    """Reset the search service singleton between tests."""
+    import fourdpocket.search as search_module
+    original = getattr(search_module, "_search_service", None)
+    yield
+    search_module._search_service = original
+
+
+@pytest.fixture(autouse=True)
+def reset_processor_registry():
+    """Snapshot/restore the processor registry around every test.
+
+    ``fourdpocket.processors.registry`` keeps module-level state
+    (_REGISTRY, _PATTERNS, and the ``match_processor`` callable itself).
+    Tests that monkey-patch ``match_processor`` with a direct attribute
+    assignment — or register throwaway processors without complete cleanup —
+    can leak into later tests in the same xdist worker, producing flakes like
+    ``test_url_pattern_matching`` returning ``FakeProcessor`` instead of
+    ``GenericURLProcessor``. Snapshotting covers the whole class of issues
+    regardless of which test is to blame.
+    """
+    # Import eagerly so the full processor set is registered before we snapshot.
+    import fourdpocket.processors  # noqa: F401
+    from fourdpocket.processors import registry
+
+    reg_before = dict(registry._REGISTRY)
+    pat_before = list(registry._PATTERNS)
+    match_processor_before = registry.match_processor
+    try:
+        yield
+    finally:
+        registry._REGISTRY.clear()
+        registry._REGISTRY.update(reg_before)
+        registry._PATTERNS[:] = pat_before
+        registry.match_processor = match_processor_before
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_singleton():
+    """Reset the settings singleton between tests.
+
+    The test_client fixture modifies settings.auth.mode = "multi" and restores
+    it afterward, but if a test fails before restore runs, state leaks. This
+    fixture ensures _settings is always reset to None after each test.
+    """
+    import fourdpocket.config as config_module
+    yield
+    config_module._settings = None
+
+
+@pytest.fixture(autouse=True)
+def clear_search_cache():
+    """Clear FTS search cache between tests."""
+    from fourdpocket.search.sqlite_fts import _search_cache
+    yield
+    _search_cache._cache.clear()
+
+
+@pytest.fixture(name="mock_chat_provider")
+def mock_chat_provider_fixture(monkeypatch):
+    """Inject a deterministic mock chat provider for AI tests."""
+    class MockChatProvider:
+        def generate(self, prompt, **kwargs):
+            return "mock response"
+        def generate_json(self, prompt, schema=None, **kwargs):
+            return {}
+
+    provider = MockChatProvider()
+    monkeypatch.setattr(
+        "fourdpocket.ai.factory.get_chat_provider", lambda: provider
+    )
+    return provider
+
+
+@pytest.fixture(name="mock_embedding_provider")
+def mock_embedding_provider_fixture(monkeypatch):
+    """Inject a mock embedding provider that returns fixed-dim vectors."""
+    class MockEmbeddingProvider:
+        dimensions = 384
+
+        def embed(self, texts):
+            return [[0.1] * 384 for _ in texts]
+
+    provider = MockEmbeddingProvider()
+    monkeypatch.setattr(
+        "fourdpocket.ai.factory.get_embedding_provider", lambda: provider
+    )
+    return provider
 
 
 @pytest.fixture(name="client")
@@ -52,7 +144,6 @@ def test_client(engine):
 
     # Disable rate limiting for tests by removing middleware state
     # We rebuild the middleware stack by removing RateLimitMiddleware
-    from starlette.middleware import Middleware
     app.user_middleware = [
         m for m in app.user_middleware
         if not (hasattr(m, "cls") and m.cls.__name__ == "RateLimitMiddleware")
@@ -94,6 +185,24 @@ def auth_headers_fixture(client):
     )
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+
+@pytest.fixture(name="enrich_user")
+def enrich_user_fixture(db):
+    """Create a user for enrichment tests."""
+    from fourdpocket.models.user import User
+
+    user = User(
+        email="enrichtest@example.com",
+        username="enrichuser",
+        password_hash="$2b$12$fakehash",
+        display_name="Enrich Test User",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @pytest.fixture(name="second_user_headers")

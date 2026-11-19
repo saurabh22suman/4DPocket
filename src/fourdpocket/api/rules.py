@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
 from fourdpocket.models.rule import Rule
 from fourdpocket.models.user import User
 
-router = APIRouter(prefix="/rules", tags=["rules"])
+router = APIRouter(prefix="/rules", tags=["Rules"])
 
 
 class RuleCondition(BaseModel):
@@ -68,12 +68,13 @@ def create_rule(
     body: RuleCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ) -> RuleRead:
     rule = Rule(
         user_id=current_user.id,
         name=body.name,
-        condition=body.condition,
-        action=body.action,
+        condition=body.condition.model_dump(),
+        action=body.action.model_dump(),
         is_active=body.is_active,
     )
     db.add(rule)
@@ -88,6 +89,7 @@ def update_rule(
     body: RuleUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ) -> RuleRead:
     rule = db.exec(select(Rule).where(Rule.id == rule_id, Rule.user_id == current_user.id)).first()
     if not rule:
@@ -104,6 +106,7 @@ def delete_rule(
     rule_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     rule = db.exec(select(Rule).where(Rule.id == rule_id, Rule.user_id == current_user.id)).first()
     if not rule:

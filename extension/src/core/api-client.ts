@@ -13,15 +13,15 @@ export function setStorageAdapter(adapter: typeof storageAdapter): void {
 }
 
 export async function getStoredAuth(): Promise<StoredAuth> {
-  const data = await storageAdapter.get([
+  const data = (await storageAdapter.get([
     STORAGE_KEYS.serverUrl,
     STORAGE_KEYS.token,
     STORAGE_KEYS.username,
-  ]);
+  ])) as Record<string, unknown>;
   return {
-    serverUrl: (data[STORAGE_KEYS.serverUrl] as string) || "",
-    token: (data[STORAGE_KEYS.token] as string) || null,
-    username: (data[STORAGE_KEYS.username] as string) || null,
+    serverUrl: (data?.[STORAGE_KEYS.serverUrl] as string) || "",
+    token: (data?.[STORAGE_KEYS.token] as string) || null,
+    username: (data?.[STORAGE_KEYS.username] as string) || null,
   };
 }
 
@@ -37,6 +37,13 @@ export async function clearStoredAuth(): Promise<void> {
   await storageAdapter.remove([STORAGE_KEYS.token, STORAGE_KEYS.username]);
 }
 
+export class SessionExpiredError extends Error {
+  constructor() {
+    super("Session expired. Please log in again.");
+    this.name = "SessionExpiredError";
+  }
+}
+
 export async function apiRequest(
   path: string,
   options: RequestInit = {}
@@ -49,8 +56,25 @@ export async function apiRequest(
     ...(options.headers as Record<string, string>),
   };
   if (token) {
+    let parsed: URL;
+    try {
+      parsed = new URL(serverUrl);
+    } catch {
+      throw new Error("Server URL is invalid");
+    }
+    if (parsed.protocol !== "https:") {
+      console.warn(
+        "[4dp] Sending Authorization header over non-HTTPS connection to",
+        serverUrl
+      );
+    }
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  return fetch(`${serverUrl}${path}`, { ...options, headers });
+  const response = await fetch(`${serverUrl}${path}`, { ...options, headers });
+  if (response.status === 401) {
+    await clearStoredAuth();
+    throw new SessionExpiredError();
+  }
+  return response;
 }

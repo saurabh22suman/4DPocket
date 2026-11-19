@@ -8,9 +8,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from fourdpocket.api.middleware import RateLimitMiddleware, RequestIDMiddleware
+from fourdpocket import __version__
+from fourdpocket.api.middleware import RateLimitMiddleware
 from fourdpocket.config import get_settings
 from fourdpocket.db.session import get_engine, init_db
+from fourdpocket.logging_config import configure_logging
+from fourdpocket.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+
+# Configure logging before the app is created so all startup messages use the
+# chosen formatter.
+configure_logging(get_settings().server.json_logs)
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +33,53 @@ async def lifespan(app: FastAPI):
     if settings.search.backend == "sqlite" and settings.database.url.startswith("sqlite"):
         from sqlmodel import Session
 
-        from fourdpocket.search.sqlite_fts import init_fts, init_notes_fts, reindex_all_items
+        from fourdpocket.search.sqlite_fts import (
+            init_chunks_fts,
+            init_fts,
+            init_notes_fts,
+            reindex_all_items,
+        )
 
         with Session(get_engine()) as db:
             recreated = init_fts(db)
             init_notes_fts(db)
+            init_chunks_fts(db)
             if recreated:
                 reindex_all_items(db)
 
-    yield
+    import sys as _sys
+
+    # Under pytest, skip both the Huey worker subprocess and the MCP session
+    # manager: the subprocess would connect to the real configured database
+    # (bypassing the per-test in-memory engine the fixtures install), and the
+    # session manager only supports one run() per instance.
+    if "pytest" in _sys.modules:
+        yield
+        return
+
+    # Start Huey worker subprocess
+    import subprocess
+
+    huey_process = subprocess.Popen(
+        [_sys.executable, "-m", "fourdpocket.workers.huey_worker"],
+    )
+    logger.info("Started Huey worker (PID %s)", huey_process.pid)
+
+    # Start the MCP session manager (streamable-HTTP transport at /mcp).
+    from fourdpocket.mcp import mcp
+
+    async with mcp.session_manager.run():
+        try:
+            yield
+        finally:
+            huey_process.terminate()
+            huey_process.wait()
 
 
 app = FastAPI(
     title="4DPocket",
     description="Self-hosted AI-powered personal knowledge base",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -75,42 +114,57 @@ app.add_middleware(
 )
 
 app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60, trust_proxy=settings.server.trust_proxy)
+
+# Middleware is applied in LIFO order in Starlette/FastAPI.
+# Add order: SecurityHeaders first so it wraps everything, then RequestID.
+# Effective execution order: SecurityHeaders → RequestID → RateLimit → CORS → handler.
 app.add_middleware(RequestIDMiddleware)
-
-@app.middleware("http")
-async def add_security_headers(request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
-    return response
-
-
-# Mount frontend static files if build directory exists
-# Resolve relative to project root (3 levels up from src/fourdpocket/)
-frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend/dist"
-if frontend_dist.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+app.add_middleware(SecurityHeadersMiddleware, secure=settings.server.secure_cookies)
 
 
 @app.get("/api/v1/health")
 def health_check():
+    """Simple liveness ping — always returns 200."""
     return {"status": "ok"}
 
 
 # Import and include API router after app creation to avoid circular imports
+from fourdpocket.api.health import router as health_router  # noqa: E402
 from fourdpocket.api.router import api_router  # noqa: E402
 
+app.include_router(health_router, prefix="/api/v1")
 app.include_router(api_router)
 
-# SPA fallback — must be last so API routes take priority
-# Resolve relative to project root (3 levels up from src/fourdpocket/)
-SPA_INDEX = Path(__file__).resolve().parent.parent.parent / "frontend/dist/index.html"
+# Mount the MCP server at /mcp. Import-time attachment is safe because the
+# ``FastMCP`` session manager is activated inside the lifespan above.
+from fastapi.responses import RedirectResponse  # noqa: E402
+
+from fourdpocket.mcp import build_mcp_app  # noqa: E402
 
 
-@app.api_route("/{path:path}", include_in_schema=False)
-async def serve_spa(path: str):
-    """Serve the SPA for any non-API, non-static route."""
+# The mounted ASGI app only answers at ``/mcp/`` (trailing slash). Most
+# users configure clients with ``http://host/mcp`` — redirect so both work.
+@app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+def _mcp_trailing_slash():
+    # 307 preserves the HTTP method + body, which is required for MCP POSTs.
+    return RedirectResponse(url="/mcp/", status_code=307)
+
+
+app.mount("/mcp", build_mcp_app())
+
+# SPA catch-all: must be registered AFTER API routes
+# Try package-bundled static files first (pip install), then dev path (app.sh / source)
+_pkg_static = Path(__file__).parent / "static"
+frontend_dist = _pkg_static if _pkg_static.is_dir() else Path("frontend/dist")
+if frontend_dist.exists():
     from fastapi.responses import FileResponse
-    return FileResponse(str(SPA_INDEX))
+
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        if ".." not in full_path:
+            file_path = frontend_dist / full_path
+            if full_path and file_path.is_file():
+                return FileResponse(file_path)
+        return FileResponse(frontend_dist / "index.html")

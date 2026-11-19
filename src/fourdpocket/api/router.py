@@ -4,10 +4,12 @@ from fastapi import APIRouter
 
 from fourdpocket.api.admin import router as admin_router
 from fourdpocket.api.ai import router as ai_router
+from fourdpocket.api.api_tokens import router as api_tokens_router
 from fourdpocket.api.auth import router as auth_router
 from fourdpocket.api.collections import item_collections_router
 from fourdpocket.api.collections import router as collections_router
 from fourdpocket.api.comments import router as comments_router
+from fourdpocket.api.entities import router as entities_router
 from fourdpocket.api.feeds import router as feeds_router
 from fourdpocket.api.highlights import router as highlights_router
 from fourdpocket.api.import_export import router as import_export_router
@@ -28,6 +30,7 @@ from fourdpocket.api.tags import router as tags_router
 api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(auth_router)
+api_router.include_router(api_tokens_router)
 api_router.include_router(items_router)
 api_router.include_router(notes_router)
 api_router.include_router(item_notes_router)
@@ -49,3 +52,4 @@ api_router.include_router(rss_router)
 api_router.include_router(item_links_router)
 api_router.include_router(item_collections_router)
 api_router.include_router(saved_filters_router)
+api_router.include_router(entities_router)

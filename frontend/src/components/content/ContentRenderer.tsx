@@ -1,7 +1,7 @@
 import { useState, useRef, useMemo } from "react";
-import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { ExternalLink, Copy, Code, FileText, Check } from "lucide-react";
+import { sanitizeHtml } from "../../lib/sanitize";
 
 interface ContentRendererProps {
   content: string | null;
@@ -55,34 +55,7 @@ export default function ContentRenderer({
     return displayContent;
   }, [displayContent, sourcePlatform]);
 
-  const sanitizedHtml = useMemo(() => {
-    // Add hook to force rel="noopener noreferrer" on all links (tabnabbing protection)
-    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-      if (node.tagName === "A") {
-        node.setAttribute("target", "_blank");
-        node.setAttribute("rel", "noopener noreferrer");
-      }
-    });
-    const result = DOMPurify.sanitize(htmlContent, {
-      ALLOWED_TAGS: [
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "p", "br", "hr",
-        "strong", "em", "b", "i", "u", "s", "del", "ins",
-        "a", "img",
-        "ul", "ol", "li",
-        "blockquote", "pre", "code",
-        "table", "thead", "tbody", "tr", "th", "td",
-        "div", "span", "figure", "figcaption",
-        "mark", "sub", "sup", "abbr",
-      ],
-      ALLOWED_ATTR: [
-        "href", "src", "alt", "title", "class", "id",
-        "target", "rel", "width", "height",
-      ],
-    });
-    DOMPurify.removeHook("afterSanitizeAttributes");
-    return result;
-  }, [htmlContent]);
+  const sanitizedHtml = useMemo(() => sanitizeHtml(htmlContent), [htmlContent]);
 
   const handleCopy = async () => {
     const text = rawContent || content || "";
@@ -132,6 +105,7 @@ export default function ContentRenderer({
             onClick={handleCopy}
             className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition-colors"
             title="Copy content"
+            aria-label={copied ? "Copied" : "Copy content"}
           >
             {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
             {copied ? "Copied" : "Copy"}
@@ -139,6 +113,8 @@ export default function ContentRenderer({
           <div className="flex bg-gray-200 dark:bg-gray-700 rounded p-0.5">
             <button
               onClick={() => setViewMode("rendered")}
+              aria-label="Reader view"
+              aria-pressed={viewMode === "rendered"}
               className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
                 viewMode === "rendered"
                   ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"
@@ -150,6 +126,8 @@ export default function ContentRenderer({
             </button>
             <button
               onClick={() => setViewMode("raw")}
+              aria-label="Raw view"
+              aria-pressed={viewMode === "raw"}
               className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
                 viewMode === "raw"
                   ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"

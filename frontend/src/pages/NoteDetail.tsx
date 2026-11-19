@@ -28,7 +28,7 @@ export default function NoteDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const noteId = id ?? "";
-  const { data: note, isLoading } = useNote(noteId);
+  const { data: note, isLoading, isError } = useNote(noteId);
   const { data: tags } = useNoteTags(noteId);
   const updateNote = useUpdateNote();
   const deleteNote = useDeleteNote();
@@ -58,10 +58,12 @@ export default function NoteDetail() {
     );
   }
 
-  if (!note) {
+  if (isError || !note) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-500 dark:text-gray-400">Note not found</p>
+        <p className="text-gray-500 dark:text-gray-400">
+          Note not found or you don&apos;t have access.
+        </p>
         <Link to="/notes" className="text-sky-600 hover:underline mt-2 inline-block">
           Back to Notes
         </Link>
@@ -142,10 +144,10 @@ export default function NoteDetail() {
           </button>
           {confirmDelete ? (
             <div className="flex items-center gap-1 ml-1">
-              <button onClick={handleDelete} className="p-1.5 rounded-full bg-red-100 dark:bg-red-900/30">
+              <button onClick={handleDelete} aria-label="Confirm delete" className="p-1.5 rounded-full bg-red-100 dark:bg-red-900/30">
                 <Check className="w-4 h-4 text-red-500" />
               </button>
-              <button onClick={() => setConfirmDelete(false)} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">
+              <button onClick={() => setConfirmDelete(false)} aria-label="Cancel delete" className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">
                 <X className="w-4 h-4 text-gray-400" />
               </button>
             </div>

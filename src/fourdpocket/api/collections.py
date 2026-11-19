@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.api.deps import (
+    get_current_user,
+    get_current_user_pat_aware,
+    get_db,
+    require_pat_editor,
+)
+from fourdpocket.models.api_token import ApiToken
 from fourdpocket.models.collection import (
     Collection,
     CollectionCreate,
@@ -20,7 +26,24 @@ from fourdpocket.models.item import ItemRead, KnowledgeItem
 from fourdpocket.models.note import Note, NoteRead
 from fourdpocket.models.user import User
 
-router = APIRouter(prefix="/collections", tags=["collections"])
+router = APIRouter(prefix="/collections", tags=["Collections"])
+
+
+def _check_pat_collection_scope(
+    db: Session,
+    pat: ApiToken | None,
+    collection_id: uuid.UUID,
+) -> None:
+    """If the request is PAT-authenticated, verify the PAT covers this collection."""
+    if pat is None:
+        return
+    from fourdpocket.api.api_token_utils import token_can_access_collection
+
+    if not token_can_access_collection(db, pat, collection_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="PAT does not have access to this collection",
+        )
 
 
 @router.post("", response_model=CollectionRead, status_code=status.HTTP_201_CREATED)
@@ -28,6 +51,7 @@ def create_collection(
     data: CollectionCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     collection = Collection(
         user_id=current_user.id,
@@ -77,8 +101,11 @@ def update_collection(
     collection_id: uuid.UUID,
     data: CollectionUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -100,8 +127,11 @@ def update_collection(
 def delete_collection(
     collection_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -134,8 +164,11 @@ def add_items_to_collection(
     collection_id: uuid.UUID,
     data: AddItemsRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -185,8 +218,11 @@ def remove_item_from_collection(
     collection_id: uuid.UUID,
     item_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -223,6 +259,7 @@ def reorder_collection_items(
     data: ReorderRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
@@ -262,13 +299,13 @@ def get_smart_collection_items(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Not a smart collection"
         )
 
-    from fourdpocket.search.indexer import SearchIndexer
+    from fourdpocket.search import get_search_service
 
-    indexer = SearchIndexer(db)
-    results = indexer.search(
-        collection.smart_query, user_id=current_user.id, limit=limit, offset=offset
+    service = get_search_service()
+    results = service.search(
+        db, collection.smart_query, current_user.id, limit=limit, offset=offset,
     )
-    return results
+    return [r.to_dict() if hasattr(r, "to_dict") else r for r in results]
 
 
 @router.get("/{collection_id}/items", response_model=list[ItemRead])
@@ -366,9 +403,12 @@ def add_notes_to_collection(
     collection_id: uuid.UUID,
     data: AddNotesRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
     """Add notes to a collection."""
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -418,9 +458,12 @@ def remove_note_from_collection(
     collection_id: uuid.UUID,
     note_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    auth: tuple[User, ApiToken | None] = Depends(get_current_user_pat_aware),
+    _: None = Depends(require_pat_editor),
 ):
     """Remove a note from a collection."""
+    current_user, pat = auth
+    _check_pat_collection_scope(db, pat, collection_id)
     collection = db.get(Collection, collection_id)
     if not collection or collection.user_id != current_user.id:
         raise HTTPException(
@@ -470,7 +513,7 @@ def list_collection_notes(
 
 # --- Item collections convenience endpoint ---
 
-item_collections_router = APIRouter(tags=["collections"])
+item_collections_router = APIRouter(tags=["Collections"])
 
 
 @item_collections_router.get("/items/{item_id}/collections", response_model=list[CollectionRead])

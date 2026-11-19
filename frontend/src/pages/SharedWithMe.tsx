@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Share2, Inbox, CheckCircle, Clock, BookOpen, Library } from "lucide-react";
+import { Share2, Inbox, CheckCircle, Clock, BookOpen, Library, ExternalLink } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/api/client";
 
 type SharedWithMeItem = {
@@ -36,6 +37,7 @@ function ShareTypeIcon({ type }: { type: string }) {
 
 function SharedCard({ share }: { share: SharedWithMeItem }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const acceptMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/shares/${share.share_id}/accept`, {}),
@@ -51,8 +53,14 @@ function SharedCard({ share }: { share: SharedWithMeItem }) {
       ? "Collection"
       : "Tag";
 
-  const resourceId =
-    share.item_id ?? share.collection_id ?? share.tag_id ?? "Unknown";
+  const viewPath =
+    share.item_id
+      ? `/item/${share.item_id}`
+      : share.collection_id
+      ? `/collections/${share.collection_id}`
+      : share.tag_id
+      ? `/tags/${share.tag_id}`
+      : null;
 
   return (
     <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-5 flex flex-col gap-3">
@@ -73,9 +81,15 @@ function SharedCard({ share }: { share: SharedWithMeItem }) {
         )}
       </div>
 
-      <p className="text-sm text-gray-500 dark:text-gray-400 font-mono truncate">
-        ID: {resourceId}
-      </p>
+      {viewPath && (
+        <button
+          onClick={() => navigate(viewPath)}
+          className="flex items-center gap-1.5 text-sm text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300 font-medium"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+          View {label}
+        </button>
+      )}
 
       <p className="text-xs text-gray-400 dark:text-gray-500">
         Shared {new Date(share.created_at).toLocaleDateString()}
@@ -122,10 +136,10 @@ export default function SharedWithMe() {
         </div>
       ) : !shares || shares.length === 0 ? (
         <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <Inbox className="w-12 h-12 text-[#0096C7]/20 dark:text-sky-900 mx-auto mb-4" />
-          <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">Nothing shared yet</p>
+          <Inbox className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+          <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">No shared items</p>
           <p className="text-sm text-gray-400 dark:text-gray-500">
-            Items shared with you by other users will appear here
+            Items shared with you by other users will appear here.
           </p>
         </div>
       ) : (

@@ -16,6 +16,7 @@ class ItemType(str, enum.Enum):
     image = "image"
     pdf = "pdf"
     code_snippet = "code_snippet"
+    video = "video"
 
 
 class SourcePlatform(str, enum.Enum):
@@ -46,6 +47,11 @@ class ReadingStatus(str, enum.Enum):
     unread = "unread"
     reading_list = "reading_list"
     read = "read"
+
+
+class ApiTokenRole(str, enum.Enum):
+    viewer = "viewer"
+    editor = "editor"
 
 
 def utc_now() -> datetime:

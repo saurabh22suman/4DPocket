@@ -1,47 +1,18 @@
 """Base processor interface and result dataclass."""
 
 import enum
-import ipaddress
-import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import httpx
 from lxml import html as lxml_html
 
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),  # AWS metadata
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
+from fourdpocket.utils.ssrf import is_safe_url
 
 
 def _is_safe_url(url: str) -> bool:
     """Check if URL is safe to fetch (not targeting internal networks)."""
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        hostname = parsed.hostname
-        if not hostname:
-            return False
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for family, _, _, _, sockaddr in addr_info:
-                ip = ipaddress.ip_address(sockaddr[0])
-                for network in _BLOCKED_NETWORKS:
-                    if ip in network:
-                        return False
-        except socket.gaierror:
-            return False
-        return True
-    except Exception:
-        return False
+    return is_safe_url(url)
 
 
 class ProcessorStatus(str, enum.Enum):
@@ -52,7 +23,15 @@ class ProcessorStatus(str, enum.Enum):
 
 @dataclass(frozen=True)
 class ProcessorResult:
-    """Immutable result from a content processor."""
+    """Immutable result from a content processor.
+
+    ``sections`` is the new structured output (Phase 1+). When populated,
+    downstream chunking respects section boundaries and propagates section
+    type/role/author into chunk metadata for search filtering and result
+    snippets. ``content`` remains for back-compat — processors that haven't
+    been migrated still set it directly; migrated processors derive it via
+    ``sections_to_text(sections)``.
+    """
 
     title: str | None = None
     description: str | None = None
@@ -64,6 +43,7 @@ class ProcessorResult:
     item_type: str = "url"
     status: ProcessorStatus = ProcessorStatus.success
     error: str | None = None
+    sections: list = field(default_factory=list)  # list[Section] — typed in sections.py
 
 
 class BaseProcessor(ABC):

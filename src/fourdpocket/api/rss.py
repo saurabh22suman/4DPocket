@@ -3,16 +3,18 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
+from fourdpocket.models.collection import Collection, CollectionItem
 from fourdpocket.models.feed_entry import FeedEntry, FeedEntryRead
 from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.rss_feed import RSSFeed
 from fourdpocket.models.user import User
+from fourdpocket.utils.ssrf import is_safe_url
 
-router = APIRouter(prefix="/rss", tags=["rss"])
+router = APIRouter(prefix="/rss", tags=["Feeds & RSS"])
 
 
 class RSSFeedCreate(BaseModel):
@@ -20,7 +22,7 @@ class RSSFeedCreate(BaseModel):
     title: str | None = None
     category: str | None = None
     target_collection_id: uuid.UUID | None = None
-    poll_interval: int = 3600
+    poll_interval: int = Field(default=3600, ge=300)  # minimum 5 minutes
     format: str = "rss"
     mode: str = "auto"
     filters: str | None = None
@@ -29,8 +31,8 @@ class RSSFeedCreate(BaseModel):
 class RSSFeedUpdate(BaseModel):
     title: str | None = None
     category: str | None = None
-    target_collection_id: str | None = None
-    poll_interval: int | None = None
+    target_collection_id: uuid.UUID | None = None
+    poll_interval: int | None = Field(default=None, ge=300)  # minimum 5 minutes
     is_active: bool | None = None
 
 
@@ -44,30 +46,20 @@ def list_feeds(
 
 def _is_safe_feed_url(url: str) -> bool:
     """Validate RSS feed URL is safe (SSRF protection at creation time)."""
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
+    return is_safe_url(url)
 
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        hostname = parsed.hostname
-        if not hostname or hostname in ("localhost",):
-            return False
-        if hostname.endswith(".local") or hostname.endswith(".internal"):
-            return False
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for family, _, _, _, sockaddr in addr_info:
-                ip = ipaddress.ip_address(sockaddr[0])
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                    return False
-        except socket.gaierror:
-            return False
-        return True
-    except Exception:
-        return False
+
+def _validate_collection_ownership(
+    db: Session, collection_id: uuid.UUID | None, user_id: uuid.UUID
+) -> None:
+    """Raise 404 if collection_id is set but does not belong to user_id."""
+    if collection_id is None:
+        return
+    col = db.exec(
+        select(Collection).where(Collection.id == collection_id, Collection.user_id == user_id)
+    ).first()
+    if not col:
+        raise HTTPException(status_code=404, detail="Collection not found")
 
 
 @router.post("", status_code=201)
@@ -75,9 +67,11 @@ def create_feed(
     body: RSSFeedCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     if not _is_safe_feed_url(body.url):
         raise HTTPException(status_code=400, detail="Feed URL targets a blocked network")
+    _validate_collection_ownership(db, body.target_collection_id, current_user.id)
 
     feed = RSSFeed(
         user_id=current_user.id,
@@ -96,17 +90,24 @@ def create_feed(
     return feed
 
 
+_UPDATE_FEED_ALLOWLIST = {"title", "category", "poll_interval", "is_active", "target_collection_id"}
+
+
 @router.patch("/{feed_id}")
 def update_feed(
     feed_id: uuid.UUID,
     body: RSSFeedUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     feed = db.exec(select(RSSFeed).where(RSSFeed.id == feed_id, RSSFeed.user_id == current_user.id)).first()
     if not feed:
         raise HTTPException(status_code=404, detail="Feed not found")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATE_FEED_ALLOWLIST}
+    if "target_collection_id" in updates:
+        _validate_collection_ownership(db, updates["target_collection_id"], current_user.id)
+    for field, value in updates.items():
         setattr(feed, field, value)
     db.commit()
     db.refresh(feed)
@@ -118,12 +119,18 @@ def delete_feed(
     feed_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
+    """Delete an RSS feed subscription and its pending entries.
+
+    FeedEntry rows are cascaded on delete.
+    KnowledgeItems auto-imported from this feed in 'auto' mode are NOT cascaded —
+    they remain in the user's knowledge base after the feed is removed.
+    """
     feed = db.exec(select(RSSFeed).where(RSSFeed.id == feed_id, RSSFeed.user_id == current_user.id)).first()
     if not feed:
         raise HTTPException(status_code=404, detail="Feed not found")
     # Cascade: remove feed entries
-    from fourdpocket.models.feed_entry import FeedEntry
     for entry in db.exec(select(FeedEntry).where(FeedEntry.feed_id == feed_id)).all():
         db.delete(entry)
     db.delete(feed)
@@ -135,6 +142,7 @@ def fetch_feed_now(
     feed_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Manually trigger a feed fetch."""
     feed = db.exec(select(RSSFeed).where(RSSFeed.id == feed_id, RSSFeed.user_id == current_user.id)).first()
@@ -177,6 +185,7 @@ def approve_feed_entry(
     entry_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Approve a feed entry: create a KnowledgeItem from entry data."""
     feed = db.exec(select(RSSFeed).where(RSSFeed.id == feed_id, RSSFeed.user_id == current_user.id)).first()
@@ -193,6 +202,10 @@ def approve_feed_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
+    # Guard against double-approve race condition
+    if entry.status == "approved":
+        raise HTTPException(status_code=400, detail="Entry already approved")
+
     # Create KnowledgeItem from entry
     item = KnowledgeItem(
         user_id=current_user.id,
@@ -202,16 +215,21 @@ def approve_feed_entry(
     )
     db.add(item)
 
-    # Add to target collection if set
+    # Add to target collection if set — re-verify ownership in case collection changed since feed creation
     if feed.target_collection_id:
-        from fourdpocket.models.collection import CollectionItem
-
-        link = CollectionItem(
-            collection_id=feed.target_collection_id,
-            item_id=item.id,
-            position=0,
-        )
-        db.add(link)
+        col = db.exec(
+            select(Collection).where(
+                Collection.id == feed.target_collection_id,
+                Collection.user_id == current_user.id,
+            )
+        ).first()
+        if col:
+            link = CollectionItem(
+                collection_id=feed.target_collection_id,
+                item_id=item.id,
+                position=0,
+            )
+            db.add(link)
 
     entry.status = "approved"
     db.add(entry)
@@ -228,6 +246,7 @@ def update_feed_entry_status(
     body: EntryStatusUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Update a feed entry status (approve/reject)."""
     feed = db.exec(select(RSSFeed).where(RSSFeed.id == feed_id, RSSFeed.user_id == current_user.id)).first()

@@ -1,7 +1,7 @@
 """Execute automation rules on item events."""
 
+import atexit
 import re
-import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from sqlmodel import Session, select
@@ -14,6 +14,7 @@ _DANGEROUS_PATTERN = re.compile(r"\([^)]*[+*][^)]*\)[+*{]")
 
 # Single-thread pool for regex execution with timeout (cross-platform)
 _regex_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="regex-guard")
+atexit.register(_regex_executor.shutdown, wait=False)
 
 
 def _safe_regex_match(pattern: str, text: str) -> bool:

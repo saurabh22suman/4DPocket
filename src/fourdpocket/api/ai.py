@@ -9,14 +9,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 logger = logging.getLogger(__name__)
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db
+from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
 from fourdpocket.config import get_settings
 from fourdpocket.models.collection import Collection, CollectionItem
 from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.tag import ItemTag
 from fourdpocket.models.user import User
 
-router = APIRouter(prefix="/ai", tags=["ai"])
+router = APIRouter(prefix="/ai", tags=["AI"])
 
 
 @router.get("/status")
@@ -38,6 +38,7 @@ def enrich_item(
     item_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Trigger AI enrichment (re-tag, re-summarize) for an item."""
     item = db.get(KnowledgeItem, item_id)
@@ -61,8 +62,8 @@ def enrich_item(
 
     # Also dispatch to Huey for embedding (best-effort, runs if consumer is up)
     try:
-        from fourdpocket.workers.ai_enrichment import enrich_item as enrich_task
-        enrich_task(str(item_id), str(current_user.id))
+        from fourdpocket.workers.enrichment_pipeline import enrich_item_v2
+        enrich_item_v2(str(item_id), str(current_user.id))
     except Exception:
         pass
 
@@ -256,6 +257,7 @@ def transcribe_audio(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_pat_editor),
 ):
     """Transcribe audio using Groq's Whisper API."""
     import httpx
@@ -305,11 +307,7 @@ def transcribe_audio(
         result = resp.json()
         transcript = result.get("text", "")
     except httpx.HTTPStatusError as e:
-        detail = f"Groq API error: {e.response.status_code}"
-        try:
-            detail = e.response.json().get("error", {}).get("message", detail)
-        except Exception:
-            pass
+        detail = f"Transcription service error (HTTP {e.response.status_code})"
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
     except Exception as e:
         logger.exception("Transcription failed: %s", e)
