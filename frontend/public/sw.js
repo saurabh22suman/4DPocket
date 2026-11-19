@@ -1,4 +1,4 @@
-const CACHE_NAME = '4dpocket-v1';
+const CACHE_NAME = '4dpocket-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -22,7 +22,6 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: network-first for API, cache-first for static assets
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -30,21 +29,22 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
-  // API calls: network only (don't cache user data)
-  if (url.pathname.startsWith('/api/')) return;
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
-  // Static assets: stale-while-revalidate
+  // A new navigation should load the matching frontend version after deployment.
+  if (request.mode === 'navigate') {
+    event.respondWith(fetch(request).catch(() => caches.match('/')));
+    return;
+  }
+
+  // Versioned JS and CSS, app icons and manifest can be reused offline.
   event.respondWith(
     caches.open(CACHE_NAME).then(async (cache) => {
       const cached = await cache.match(request);
-      const fetchPromise = fetch(request).then((response) => {
-        if (response.ok) {
-          cache.put(request, response.clone());
-        }
-        return response;
-      }).catch(() => cached);
-
-      return cached || fetchPromise;
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok) await cache.put(request, response.clone()).catch(() => {});
+      return response;
     })
   );
 });

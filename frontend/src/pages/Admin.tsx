@@ -65,6 +65,16 @@ export default function Admin() {
     enabled: !!currentUser && currentUser.role === "admin",
   });
 
+  const { data: authConfig } = useQuery({
+    queryKey: ["auth-config"],
+    queryFn: () => api.get<{ invites_enabled: boolean }>("/api/v1/auth/config"),
+  });
+  const [copiedInvite, setCopiedInvite] = useState(false);
+  const createInvite = useMutation({
+    mutationFn: () => api.post<{ url: string }>("/api/v1/admin/invites"),
+    onMutate: () => setCopiedInvite(false),
+  });
+
   const updateSettings = useMutation({
     mutationFn: (data: Partial<InstanceSettingsData>) =>
       api.patch("/api/v1/admin/settings", data),
@@ -156,6 +166,54 @@ export default function Admin() {
         <Shield className="w-6 h-6 text-sky-600" />
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Admin Panel</h1>
       </div>
+
+      {authConfig?.invites_enabled && (
+        <section className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold">Invite a user</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Each link creates one regular account and expires in 24 hours.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => createInvite.mutate()}
+              disabled={createInvite.isPending}
+              className="rounded-lg bg-sky-800 px-3 py-2 text-sm font-medium text-white hover:bg-sky-900 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60"
+            >
+              {createInvite.isPending ? "Creating…" : "Create invite"}
+            </button>
+          </div>
+          {createInvite.isError && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{createInvite.error.message}</p>}
+          {createInvite.data && (
+            <div className="flex flex-wrap gap-2">
+              <input
+                readOnly
+                aria-label="Invitation link"
+                value={createInvite.data.url}
+                onFocus={(event) => event.currentTarget.select()}
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(createInvite.data.url);
+                    setCopiedInvite(true);
+                  } catch {
+                    setCopiedInvite(false);
+                  }
+                }}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm"
+              >
+                Copy invite link
+              </button>
+              <span role="status" className="basis-full text-sm">{copiedInvite ? "Invite link copied." : ""}</span>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Analytics */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm p-6 mb-6">

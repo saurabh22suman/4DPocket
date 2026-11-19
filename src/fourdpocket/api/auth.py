@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import text
+from sqlalchemy import text, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
 from fourdpocket.api.auth_utils import create_access_token, hash_password, verify_password
@@ -21,6 +22,7 @@ from fourdpocket.api.rate_limit import check_rate_limit, record_attempt, reset_r
 from fourdpocket.auth.email import send_email
 from fourdpocket.auth.tokens import generate_token, hash_token, is_expired
 from fourdpocket.config import get_settings
+from fourdpocket.models.account_invite import AccountInvite
 from fourdpocket.models.api_token import ApiToken
 from fourdpocket.models.base import UserRole
 from fourdpocket.models.email_verification import EmailVerificationToken
@@ -82,28 +84,42 @@ def _create_verification_token(db: Session, user_id) -> str:
     return raw
 
 
+class RegistrationRequest(UserCreate):
+    invite_token: str | None = Field(default=None, min_length=32, max_length=128)
+
+
 @router.get("/config")
 def auth_config(db: Session = Depends(get_db)):
-    if not get_settings().auth.allow_registration:
-        return {"registration_enabled": False}
-    instance = db.get(InstanceSettings, 1)
-    return {"registration_enabled": instance is None or instance.registration_enabled}
+    auth = get_settings().auth
+    instance = db.get(InstanceSettings, 1) if auth.allow_registration else None
+    return {
+        "registration_enabled": auth.allow_registration and (
+            instance is None or instance.registration_enabled
+        ),
+        "invites_enabled": auth.mode == "multi" and auth.allow_invites,
+    }
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserCreate, request: Request, db: Session = Depends(get_db)):
-    # Check instance registration settings BEFORE rate limiting to prevent
-    # attackers from exhausting the rate limit when registration is disabled.
-    settings = get_or_create_settings(db) if get_settings().auth.allow_registration else None
-    if settings is None or not settings.registration_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Registration is currently disabled",
-        )
+def register(user_data: RegistrationRequest, request: Request, db: Session = Depends(get_db)):
+    auth = get_settings().auth
+    invite_token = user_data.invite_token
+    using_invite = invite_token is not None
+    if using_invite:
+        if auth.mode != "multi" or not auth.allow_invites:
+            raise HTTPException(status_code=403, detail="Account invitations are disabled")
+    elif not auth.allow_registration:
+        raise HTTPException(status_code=403, detail="Registration is currently disabled")
+
+    settings = get_or_create_settings(db)
+    if not using_invite and not settings.registration_enabled:
+        raise HTTPException(status_code=403, detail="Registration is currently disabled")
 
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(db, key=client_ip, action="register", max_attempts=10, window_seconds=3600, lockout_minutes=60)
     record_attempt(db, key=client_ip, action="register")
+    if using_invite:
+        db.commit()
 
     # Check max users
     if settings.max_users is not None:
@@ -125,24 +141,40 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
             detail="An account with this email or username already exists",
         )
 
-    # First user becomes admin. Use an atomic conditional UPDATE on the
-    # instance_settings singleton to claim the slot — race-free on both
-    # SQLite (writes are serialized) and PostgreSQL (row-level lock on the
-    # UPDATE). Exactly one concurrent registration can flip the flag from
-    # False → True; every other caller gets rowcount=0 and becomes a regular
-    # user. We rely on rowcount, not a separate read, so there is no TOCTOU.
-    # Commit the claim immediately so the write lock is released before we do
-    # further work — prevents SQLITE_BUSY for concurrent registrations that
-    # would otherwise queue behind the User insert below.
-    result = db.execute(
-        text(
-            "UPDATE instance_settings SET admin_bootstrapped = :t "
-            "WHERE id = 1 AND admin_bootstrapped = :f"
-        ),
-        {"t": True, "f": False},
-    )
-    role = UserRole.admin if result.rowcount == 1 else UserRole.user
-    db.commit()
+    if invite_token is not None:
+        now = datetime.now(timezone.utc)
+        result = db.execute(
+            update(AccountInvite)
+            .where(
+                AccountInvite.token_hash == hash_token(invite_token),
+                AccountInvite.used_at.is_(None),
+                AccountInvite.expires_at > now,
+            )
+            .values(used_at=now)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=403, detail="This invite is invalid, expired, or already used")
+        role = UserRole.user
+    else:
+        # First user becomes admin. Use an atomic conditional UPDATE on the
+        # instance_settings singleton to claim the slot — race-free on both
+        # SQLite (writes are serialized) and PostgreSQL (row-level lock on the
+        # UPDATE). Exactly one concurrent registration can flip the flag from
+        # False → True; every other caller gets rowcount=0 and becomes a regular
+        # user. We rely on rowcount, not a separate read, so there is no TOCTOU.
+        # Commit the claim immediately so the write lock is released before we do
+        # further work — prevents SQLITE_BUSY for concurrent registrations that
+        # would otherwise queue behind the User insert below.
+        result = db.execute(
+            text(
+                "UPDATE instance_settings SET admin_bootstrapped = :t "
+                "WHERE id = 1 AND admin_bootstrapped = :f"
+            ),
+            {"t": True, "f": False},
+        )
+        role = UserRole.admin if result.rowcount == 1 else UserRole.user
+        db.commit()
 
     user = User(
         email=user_data.email,
@@ -152,7 +184,12 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
         role=role,
     )
     db.add(user)
-    db.commit()
+    try:
+        # Consuming an invitation and creating its account commit together.
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email or username already exists") from exc
     db.refresh(user)
 
     # Send verification email (best-effort — never block registration on failure)

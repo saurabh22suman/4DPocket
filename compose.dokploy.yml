@@ -8,6 +8,7 @@ services:
     environment:
       FDP_AUTH__MODE: multi
       FDP_AUTH__ALLOW_REGISTRATION: "false"
+      FDP_AUTH__ALLOW_INVITES: "true"
       FDP_DATABASE__URL: sqlite:////data/4dpocket.db
       FDP_STORAGE__BASE_PATH: /data
       FDP_SEARCH__BACKEND: sqlite

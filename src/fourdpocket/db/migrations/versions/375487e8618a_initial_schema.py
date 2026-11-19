@@ -21,10 +21,13 @@ def upgrade() -> None:
     # Create all tables defined in SQLModel metadata.
     # This ensures the migration matches what create_all() does at startup.
     bind = op.get_bind()
-    SQLModel.metadata.create_all(bind)
+    # Invitations have their own explicit revision and must not be created here.
+    tables = [table for table in SQLModel.metadata.sorted_tables if table.name != "account_invites"]
+    SQLModel.metadata.create_all(bind, tables=tables)
 
 
 def downgrade() -> None:
     # Drop all tables in reverse dependency order.
     bind = op.get_bind()
-    SQLModel.metadata.drop_all(bind)
+    tables = [table for table in SQLModel.metadata.sorted_tables if table.name != "account_invites"]
+    SQLModel.metadata.drop_all(bind, tables=tables)

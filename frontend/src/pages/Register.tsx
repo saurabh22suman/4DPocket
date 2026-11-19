@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { UserPlus, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { useRegister, useLogin } from "@/hooks/use-auth";
 
@@ -21,6 +21,8 @@ export default function Register() {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const { hash } = useLocation();
+  const inviteToken = new URLSearchParams(hash.slice(1)).get("invite");
   const register = useRegister();
   const login = useLogin();
 
@@ -28,8 +30,8 @@ export default function Register() {
     e.preventDefault();
     setError("");
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
       return;
     }
 
@@ -39,10 +41,11 @@ export default function Register() {
         email,
         password,
         display_name: displayName || undefined,
+        invite_token: inviteToken ?? undefined,
       });
       // Auto-login after registration
       await login.mutateAsync({ identifier: email, password });
-      navigate("/");
+      navigate("/", { replace: true });
     } catch (err: unknown) {
       const isConflict = err instanceof Error && err.message.includes("409");
       if (isConflict) {
@@ -71,27 +74,35 @@ export default function Register() {
           onSubmit={handleSubmit}
           className="bg-white dark:bg-gray-900 rounded-2xl border border-sky-100 dark:border-gray-800 shadow-sm p-6 space-y-4"
         >
+          <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {inviteToken ? "Accept your invitation" : "Create an account"}
+          </h1>
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+            <label htmlFor="register-username" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
               Username
             </label>
             <input
+              id="register-username"
+              name="username"
+              autoComplete="username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Choose a username"
               required
-              autoFocus
               minLength={3}
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-[#F0F9FF] dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0096C7] focus:border-transparent transition-all"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+            <label htmlFor="register-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
               Email
             </label>
             <input
+              id="register-email"
+              name="email"
+              autoComplete="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -102,10 +113,13 @@ export default function Register() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+            <label htmlFor="register-display-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
               Display Name <span className="text-gray-400">(optional)</span>
             </label>
             <input
+              id="register-display-name"
+              name="nickname"
+              autoComplete="nickname"
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
@@ -121,12 +135,14 @@ export default function Register() {
             <div className="relative">
               <input
                 id="register-password"
+                name="password"
+                autoComplete="new-password"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="At least 6 characters"
+                placeholder="At least 8 characters"
                 required
-                minLength={6}
+                minLength={8}
                 className="w-full px-4 py-2.5 pr-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-[#F0F9FF] dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0096C7] focus:border-transparent transition-all"
               />
               <button
@@ -141,7 +157,7 @@ export default function Register() {
           </div>
 
           {(error || register.isError) && (
-            <div className="flex items-center gap-2 text-red-500 text-sm bg-red-50 dark:bg-red-950/30 px-3 py-2 rounded-xl">
+            <div role="alert" className="flex items-center gap-2 text-red-500 text-sm bg-red-50 dark:bg-red-950/30 px-3 py-2 rounded-xl">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
               {error || "Registration failed. Please try again."}
             </div>

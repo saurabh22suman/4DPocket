@@ -32,9 +32,14 @@ export default function Login() {
     try {
       await login.mutateAsync({ identifier, password });
       const returnTo = searchParams.get("returnTo") || "/";
-      // Only allow relative paths to prevent open redirect
-      const safePath = returnTo.startsWith("/") ? returnTo : "/";
-      navigate(safePath);
+      let destination = "/";
+      if (returnTo.startsWith("/") && URL.canParse(returnTo, window.location.origin)) {
+        const target = new URL(returnTo, window.location.origin);
+        if (target.origin === window.location.origin && !target.pathname.startsWith("//")) {
+          destination = target.pathname + target.search + target.hash;
+        }
+      }
+      navigate(destination, { replace: true });
     } catch {
       // Error handled by mutation state
     }
@@ -59,16 +64,20 @@ export default function Login() {
           className="bg-white dark:bg-gray-900 rounded-2xl border border-sky-100 dark:border-gray-800 shadow-sm p-6 space-y-4"
         >
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+            <label htmlFor="login-identifier" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
               Email or Username
             </label>
             <input
+              id="login-identifier"
+              name="username"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               type="text"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
               placeholder="you@example.com or username"
               required
-              autoFocus
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-[#F0F9FF] dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0096C7] focus:border-transparent transition-all"
             />
           </div>
@@ -80,6 +89,8 @@ export default function Login() {
             <div className="relative">
               <input
                 id="login-password"
+                name="password"
+                autoComplete="current-password"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -99,7 +110,7 @@ export default function Login() {
           </div>
 
           {login.isError && (
-            <div className="flex items-center gap-2 text-red-500 text-sm bg-red-50 dark:bg-red-950/30 px-3 py-2 rounded-xl">
+            <div role="alert" className="flex items-center gap-2 text-red-700 dark:text-red-300 text-sm bg-red-50 dark:bg-red-950/30 px-3 py-2 rounded-xl">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
               Invalid credentials
             </div>
@@ -108,14 +119,14 @@ export default function Login() {
           <button
             type="submit"
             disabled={login.isPending}
-            className="w-full py-2.5 bg-[#0096C7] text-white rounded-xl font-medium hover:bg-[#0077A8] active:scale-[0.98] transition-all duration-200 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-[#006B94] text-white rounded-xl font-medium hover:bg-[#005674] active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-700 transition-colors duration-200 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
           >
             {login.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <LogIn className="w-4 h-4" />
             )}
-            {login.isPending ? "Signing in..." : "Sign in"}
+            {login.isPending ? "Signing in…" : "Sign in"}
           </button>
 
           {authConfig?.registration_enabled && (

@@ -33,7 +33,12 @@ from fourdpocket.models.item import (
 from fourdpocket.models.tag import ItemTag, Tag
 from fourdpocket.models.user import User
 from fourdpocket.quotas.enforcement import check_quota
-from fourdpocket.utils.ssrf import is_safe_url
+from fourdpocket.utils.ssrf import (
+    BlockedURLError,
+    ResponseTooLargeError,
+    fetch_public_url,
+    is_safe_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -985,11 +990,7 @@ def media_proxy(
     Handles CORS-blocked and hotlink-protected URLs (e.g. LinkedIn).
     """
     import hashlib
-    import io
-    from urllib.parse import urljoin
     from urllib.parse import urlparse as _urlparse
-
-    import httpx
 
     from fourdpocket.config import get_settings
     from fourdpocket.storage.local import LocalStorage
@@ -1038,56 +1039,21 @@ def media_proxy(
         mime_type = mime_map.get(resolved.suffix.lower()) or mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
         return FileResponse(resolved, media_type=mime_type)
 
-    # Fetch from source — validate each redirect hop for SSRF
     try:
-        req_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        }
-        current_fetch_url = url
-        with httpx.Client(timeout=10.0, follow_redirects=False) as client:
-            for _hop in range(5):
-                if not _is_safe_proxy_url(current_fetch_url):
-                    raise HTTPException(status_code=400, detail="URL not allowed")
-                # Fix 2: check Content-Length before streaming
-                resp = client.get(current_fetch_url, headers=req_headers)
-                if resp.is_redirect:
-                    raw_location = resp.headers.get("location", "")
-                    if not raw_location:
-                        raise HTTPException(status_code=502, detail="Empty redirect")
-                    # Fix 6: resolve relative redirects to absolute URLs
-                    current_fetch_url = urljoin(current_fetch_url, raw_location)
-                    continue
-                resp.raise_for_status()
-                break
-            else:
-                raise HTTPException(status_code=502, detail="Too many redirects")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Media proxy fetch failed for %s: %s", url, e)
-        raise HTTPException(status_code=502, detail="Failed to fetch image")
-
-    # Fix 2: enforce size limit — short-circuit on Content-Length header
-    _cl_header = resp.headers.get("content-length", "")
-    if _cl_header.isdigit() and int(_cl_header) > _media_proxy_size_limit:
-        raise HTTPException(status_code=413, detail="Image exceeds 10 MB size limit")
-
-    # Fix 2: stream body with accumulator, abort at 10 MB
-    try:
-        _buf = io.BytesIO()
-        with httpx.Client(timeout=10.0) as _stream_client:
-            with _stream_client.stream("GET", current_fetch_url, headers=req_headers) as _stream_resp:
-                for _chunk in _stream_resp.iter_bytes(chunk_size=65536):
-                    _buf.write(_chunk)
-                    if _buf.tell() > _media_proxy_size_limit:
-                        raise HTTPException(status_code=413, detail="Image exceeds 10 MB size limit")
-        resp_body = _buf.getvalue()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Media proxy stream failed for %s: %s", url, e)
-        raise HTTPException(status_code=502, detail="Failed to fetch image")
+        resp = fetch_public_url(
+            url,
+            timeout=10,
+            max_bytes=_media_proxy_size_limit,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "image/*"},
+        )
+    except BlockedURLError as exc:
+        raise HTTPException(status_code=400, detail="URL not allowed") from exc
+    except ResponseTooLargeError as exc:
+        raise HTTPException(status_code=413, detail="Image exceeds 10 MB size limit") from exc
+    except Exception as exc:
+        logger.warning("Media proxy fetch failed (%s)", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Failed to fetch image") from exc
+    resp_body = resp.content
 
     # Fix 3: enforce strict Content-Type allowlist
     resp_ct = resp.headers.get("content-type", "").split(";")[0].strip()

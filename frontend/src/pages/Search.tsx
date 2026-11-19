@@ -104,11 +104,15 @@ export default function Search() {
 
   // Build filter params
   const filterParams = new URLSearchParams();
-  if (selectedPlatform) filterParams.set("source_platform", selectedPlatform);
-  if (selectedType) filterParams.set("item_type", selectedType);
-  if (selectedTag) filterParams.set("tag", selectedTag);
-  if (showFavorites) filterParams.set("is_favorite", "true");
-  if (showArchived) filterParams.set("is_archived", "true");
+  if (mode !== "semantic") {
+    if (selectedPlatform) filterParams.set("source_platform", selectedPlatform);
+    if (selectedType) filterParams.set("item_type", selectedType);
+  }
+  if (mode === "fulltext") {
+    if (selectedTag) filterParams.set("tag", selectedTag);
+    if (showFavorites) filterParams.set("is_favorite", "true");
+    if (showArchived) filterParams.set("is_archived", "true");
+  }
   const filterStr = filterParams.toString() ? `&${filterParams.toString()}` : "";
 
   // Unified search (items + notes) — default mode
@@ -118,7 +122,7 @@ export default function Search() {
 
   const { data: unifiedResults, isLoading: unifiedLoading, isFetching: unifiedFetching } =
     useQuery<UnifiedResult>({
-      queryKey: ["search-unified", query, selectedPlatform, selectedType, selectedTag, showFavorites, showArchived],
+      queryKey: ["search-unified", unifiedUrl],
       queryFn: () => api.get(unifiedUrl!),
       enabled: mode === "fulltext" && query.length >= 2,
     });
@@ -130,7 +134,7 @@ export default function Search() {
 
   const { data: semanticResults, isLoading: semanticLoading, isFetching: semanticFetching } =
     useQuery<Item[]>({
-      queryKey: ["search-semantic", query, selectedPlatform, selectedType],
+      queryKey: ["search-semantic", semanticUrl],
       queryFn: () => api.get(semanticUrl!),
       enabled: mode === "semantic" && query.length >= 2,
     });
@@ -142,7 +146,7 @@ export default function Search() {
 
   const { data: hybridResults, isLoading: hybridLoading, isFetching: hybridFetching } =
     useQuery<Item[]>({
-      queryKey: ["search-hybrid", query, selectedPlatform, selectedType],
+      queryKey: ["search-hybrid", hybridUrl],
       queryFn: () => api.get(hybridUrl!),
       enabled: mode === "hybrid" && query.length >= 2,
     });
@@ -190,6 +194,7 @@ export default function Search() {
         <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
         <input
           type="search"
+          aria-label="Search your knowledge base"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Search your knowledge base... (try tag:ml is:favorite after:2024-01)"
@@ -208,6 +213,7 @@ export default function Search() {
             key={key}
             onClick={() => setMode(key)}
             title={desc}
+            aria-pressed={mode === key}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 cursor-pointer ${
               mode === key
                 ? "bg-sky-600 text-white"
@@ -221,7 +227,7 @@ export default function Search() {
       </div>
 
       {/* Quick filter toggles */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
+      {mode === "fulltext" && <div className="flex flex-wrap items-center gap-2 mb-3">
         <button
           onClick={() => setShowFavorites(!showFavorites)}
           className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all cursor-pointer ${
@@ -244,10 +250,10 @@ export default function Search() {
           <Archive className="h-3 w-3" />
           Archived
         </button>
-      </div>
+      </div>}
 
       {/* Platform + Type + Tag filter chips */}
-      {(filters?.platforms?.length || filters?.types?.length || filters?.tags?.length) ? (
+      {mode !== "semantic" && (filters?.platforms?.length || filters?.types?.length || filters?.tags?.length) ? (
         <div className="flex flex-wrap gap-2 mb-6">
           {filters?.platforms?.map((p) => (
             <button
@@ -275,7 +281,7 @@ export default function Search() {
               {formatTypeLabel(type)}
             </button>
           ))}
-          {filters?.tags?.slice(0, 15).map((t) => (
+          {mode === "fulltext" && filters?.tags?.slice(0, 15).map((t) => (
             <button
               key={t.slug}
               onClick={() => setSelectedTag(selectedTag === t.slug ? null : t.slug)}

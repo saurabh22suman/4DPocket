@@ -2,13 +2,10 @@
 
 import hashlib
 import logging
-import socket
 import uuid
 from urllib.parse import urlparse
 
-import httpx
-
-from fourdpocket.utils.ssrf import is_safe_url
+from fourdpocket.utils.ssrf import fetch_public_url, is_safe_url, resolve_and_check
 from fourdpocket.workers import huey
 
 logger = logging.getLogger(__name__)
@@ -22,24 +19,16 @@ def _is_safe_media_url(url: str) -> bool:
 
 
 def _resolve_and_pin(url: str) -> str | None:
-    """Resolve hostname to IP and return a pinned URL to prevent DNS rebinding.
+    """Return the address the public fetch policy permits."""
+    return resolve_and_check(url)
 
-    Returns the resolved IP as a string, or None if unsafe.
-    """
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        if not hostname:
-            return None
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
-        if not addr_info:
-            return None
-        resolved_ip = addr_info[0][4][0]
-        if not is_safe_url(f"http://{resolved_ip}"):
-            return None
-        return resolved_ip
-    except Exception:
-        return None
+
+def supported_video_url(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return any(
+        host == domain or host.endswith("." + domain)
+        for domain in ("youtube.com", "youtu.be", "instagram.com", "tiktok.com")
+    )
 
 
 @huey.task(retries=3, retry_delay=60)
@@ -67,75 +56,28 @@ def download_media(item_id: str, user_id: str, media_urls: list[dict]) -> dict:
         if not media_url:
             continue
 
-        # SSRF protection: validate URL and pin DNS to prevent rebinding
-        if not _is_safe_media_url(media_url):
-            logger.warning("SSRF blocked: %s", media_url)
-            continue
-
         try:
-            # Follow redirects manually with per-hop SSRF + DNS pinning
-            current_url = media_url
-            final_url = None
-            for _redirect in range(5):
-                pinned_ip = _resolve_and_pin(current_url)
-                if not pinned_ip:
-                    logger.warning("SSRF blocked redirect: %s", current_url)
-                    break
-                resp = httpx.head(
-                    current_url, timeout=10.0, follow_redirects=False,
-                    headers={"User-Agent": "4DPocket/0.1"},
-                )
-                if resp.is_redirect:
-                    current_url = resp.headers.get("location", "")
-                    if not current_url:
-                        break
-                    continue
-                final_url = current_url
-                break
-
-            if not final_url:
-                logger.warning("Media redirect chain invalid: %s", media_url)
-                continue
-
-            # Final DNS pin check before streaming download
-            if not _resolve_and_pin(final_url):
-                logger.warning("SSRF blocked final URL: %s", final_url)
-                continue
-
-            with httpx.stream("GET", final_url, timeout=30.0, follow_redirects=False, headers={"User-Agent": "4DPocket/0.1"}) as response:
-                response.raise_for_status()
-                total_size = 0
-                chunks = []
-                for chunk in response.iter_bytes(chunk_size=65536):
-                    total_size += len(chunk)
-                    if total_size > MAX_MEDIA_SIZE_BYTES:
-                        logger.warning(
-                            "Media too large (>%dMB): %s",
-                            MAX_MEDIA_SIZE_BYTES // (1024 * 1024),
-                            media_url,
-                        )
-                        break
-                    chunks.append(chunk)
-                else:
-                    # Only save if we didn't exceed the limit
-                    media_bytes = b"".join(chunks)
-                    url_hash = hashlib.sha256(media_url.encode()).hexdigest()[:12]
-                    parsed_url = urlparse(media_url)
-                    ext = parsed_url.path.rsplit(".", 1)[-1] if "." in parsed_url.path else "bin"
-                    ext = ext[:10]
-                    filename = f"{item_id}_{url_hash}.{ext}"
-
-                    relative_path = storage.save_file(uid, "media", filename, media_bytes)
-                    downloaded.append({
-                        "original_url": media_url,
-                        "local_path": relative_path,
-                        "type": media_info.get("type", "unknown"),
-                        "role": media_info.get("role", ""),
-                        "size_bytes": total_size,
-                    })
-
+            response = fetch_public_url(
+                media_url,
+                timeout=30,
+                max_bytes=MAX_MEDIA_SIZE_BYTES,
+                headers={"User-Agent": "4DPocket/0.2"},
+            )
+            media_bytes = response.content
+            url_hash = hashlib.sha256(media_url.encode()).hexdigest()[:12]
+            parsed_url = urlparse(media_url)
+            ext = parsed_url.path.rsplit(".", 1)[-1] if "." in parsed_url.path else "bin"
+            filename = f"{item_id}_{url_hash}.{ext[:10]}"
+            relative_path = storage.save_file(uid, "media", filename, media_bytes)
+            downloaded.append({
+                "original_url": media_url,
+                "local_path": relative_path,
+                "type": media_info.get("type", "unknown"),
+                "role": media_info.get("role", ""),
+                "size_bytes": len(media_bytes),
+            })
         except Exception as e:
-            logger.warning("Failed to download media %s: %s", media_url, e)
+            logger.warning("Media download failed (%s)", type(e).__name__)
 
     # Update item with local media paths (update existing entries, don't duplicate)
     if downloaded:
@@ -173,25 +115,8 @@ def download_video(url: str, output_dir: str, max_quality: str = "720") -> str |
         logger.warning("SSRF blocked video download: %s", url)
         return None
 
-    # Resolve URL through redirects with SSRF validation per hop before handing to yt-dlp
-    try:
-        current_url = url
-        for _redirect in range(5):
-            if not _is_safe_media_url(current_url):
-                logger.warning("SSRF blocked video redirect: %s", current_url)
-                return None
-            resp = httpx.head(current_url, timeout=10.0, follow_redirects=False, headers={"User-Agent": "4DPocket/0.1"})
-            if resp.is_redirect:
-                current_url = resp.headers.get("location", "")
-                if not current_url:
-                    return None
-                continue
-            break
-        # Final URL must also be safe
-        if not _is_safe_media_url(current_url):
-            logger.warning("SSRF blocked video final URL: %s", current_url)
-            return None
-    except Exception:
+    # Third-party extractors are restricted to supported platform origins.
+    if not supported_video_url(url):
         return None
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -206,7 +131,7 @@ def download_video(url: str, output_dir: str, max_quality: str = "720") -> str |
                 "--merge-output-format", "mp4",
                 "-o", output_template,
                 "--max-filesize", "500M",
-                current_url,
+                "--", url,
             ],
             capture_output=True, text=True, timeout=600,
         )

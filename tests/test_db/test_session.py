@@ -83,8 +83,9 @@ class TestGetSession:
 class TestInitDB:
     """Test database initialization."""
 
-    def test_init_db_creates_all_tables(self):
+    def test_init_db_creates_all_tables(self, tmp_path, monkeypatch):
         """init_db creates all SQLModel tables."""
+        monkeypatch.setenv("FDP_DATABASE__URL", f"sqlite:///{tmp_path / 'migrated.db'}")
         # Reset engine to force creation
         reset_engine()
         try:
@@ -103,6 +104,7 @@ class TestInitDB:
             assert "users" in table_names
             assert "knowledge_items" in table_names
             assert "collections" in table_names
+            assert "account_invites" in table_names
         finally:
             reset_engine()
 

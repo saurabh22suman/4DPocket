@@ -1,5 +1,6 @@
 """Base processor interface and result dataclass."""
 
+import asyncio
 import enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -7,7 +8,7 @@ from dataclasses import dataclass, field
 import httpx
 from lxml import html as lxml_html
 
-from fourdpocket.utils.ssrf import is_safe_url
+from fourdpocket.utils.ssrf import fetch_public_url, is_safe_url
 
 
 def _is_safe_url(url: str) -> bool:
@@ -68,43 +69,19 @@ class BaseProcessor(ABC):
     async def _fetch_url(
         self, url: str, timeout: float = 30.0, follow_redirects: bool = True
     ) -> httpx.Response:
-        """Fetch a URL with proper headers and timeout.
-
-        Redirects are followed manually so each target is SSRF-checked.
-        """
-        if not _is_safe_url(url):
-            raise ValueError("URL blocked: targets internal network")
+        """Fetch a public URL with a size limit and per-hop connection checks."""
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (compatible; 4DPocket/0.1; "
-                "+https://github.com/4dpocket)"
-            ),
+            "User-Agent": "Mozilla/5.0 (compatible; 4DPocket/0.2; +https://github.com/onllm-dev/4DPocket)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
-        max_redirects = 5 if follow_redirects else 0
-        current_url = url
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            for _ in range(max_redirects + 1):
-                response = await client.get(current_url, headers=headers)
-                if response.is_redirect and max_redirects > 0:
-                    location = response.headers.get("location", "")
-                    if not location:
-                        break
-                    # Resolve relative redirects
-                    if location.startswith("/"):
-                        from urllib.parse import urlparse
-                        parsed = urlparse(current_url)
-                        location = f"{parsed.scheme}://{parsed.netloc}{location}"
-                    # SSRF check on redirect target
-                    if not _is_safe_url(location):
-                        raise ValueError("Redirect blocked: targets internal network")
-                    current_url = location
-                else:
-                    response.raise_for_status()
-                    return response
-        response.raise_for_status()
-        return response
+        return await asyncio.to_thread(
+            fetch_public_url,
+            url,
+            headers=headers,
+            timeout=timeout,
+            max_redirects=5 if follow_redirects else 0,
+        )
 
     def _extract_og_metadata(self, html_content: str) -> dict:
         """Extract Open Graph and meta tag metadata from HTML."""

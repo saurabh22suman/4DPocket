@@ -2,10 +2,12 @@
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from sqlmodel import Session
 
 from fourdpocket.models.item import KnowledgeItem
+from fourdpocket.utils.ssrf import BlockedURLError, ResponseTooLargeError
 from fourdpocket.workers.media_downloader import (
     _is_safe_media_url,
     _resolve_and_pin,
@@ -111,39 +113,10 @@ class TestDownloadMedia:
         user = _make_media_user(db)
         item = _make_media_item(db, user)
 
-        class MockHeadResponse:
-            is_redirect = False
-
-        def mock_head(url, **kwargs):
-            return MockHeadResponse()
-
-        class MockStreamResponse:
-            def raise_for_status(self):
-                pass
-
-            def iter_bytes(self, chunk_size):
-                yield b"\x89PNG\r\n\x1a\n\x00fake"
-
-        class MockStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-            def __getattr__(self, name):
-                # httpx.stream returns the response directly for these attributes
-                if name == "raise_for_status":
-                    return lambda: None
-                if name == "iter_bytes":
-                    return lambda chunk_size: [b"\x89PNG\r\n\x1a\n\x00fake"]
-                raise AttributeError(name)
-
-        def mock_stream(method, url, **kwargs):
-            return MockStream()
-
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("httpx.stream", mock_stream)
+        monkeypatch.setattr(
+            "fourdpocket.workers.media_downloader.fetch_public_url",
+            lambda *_args, **_kwargs: httpx.Response(200, content=b"\x89PNG\r\n\x1a\n\x00fake"),
+        )
 
         class MockStorage:
             def save_file(self, uid, kind, filename, data):
@@ -163,18 +136,18 @@ class TestDownloadMedia:
         assert result["downloaded"] == 1
         assert result["total"] == 1
 
-    def test_download_media_head_error(self, db: Session, engine, monkeypatch):
-        """httpx error on head request logs warning, continues."""
+    def test_download_media_connection_error(self, db: Session, engine, monkeypatch):
+        """A fetch error leaves the media unsaved."""
         import fourdpocket.db.session as db_module
         monkeypatch.setattr(db_module, "_engine", engine)
 
         user = _make_media_user(db)
         item = _make_media_item(db, user)
 
-        def mock_head(url, **kwargs):
-            raise RuntimeError("DNS failure")
+        def fetch(*_args, **_kwargs):
+            raise httpx.ConnectError("DNS failure")
 
-        monkeypatch.setattr("httpx.head", mock_head)
+        monkeypatch.setattr("fourdpocket.workers.media_downloader.fetch_public_url", fetch)
 
         media_urls = [{"url": "https://example.com/image.png", "type": "image", "role": "thumbnail"}]
 
@@ -189,34 +162,11 @@ class TestDownloadMedia:
         user = _make_media_user(db)
         item = _make_media_item(db, user)
 
-        class MockHeadResponse:
-            is_redirect = False
+        def fetch(*_args, max_bytes, **_kwargs):
+            assert max_bytes == 100 * 1024 * 1024
+            raise ResponseTooLargeError("Media too large")
 
-        def mock_head(url, **kwargs):
-            return MockHeadResponse()
-
-        class MockStream:
-            response = type("Response", (), {"raise_for_status": lambda self: None})()
-
-            def iter_bytes(self, chunk_size):
-                yield b"x" * (200 * 1024 * 1024)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-        def mock_stream(method, url, **kwargs):
-            return MockStream()
-
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("httpx.stream", mock_stream)
-
-        monkeypatch.setattr(
-            "fourdpocket.storage.local.LocalStorage",
-            lambda: type("S", (), {"save_file": lambda *a, **k: "path"})(),
-        )
+        monkeypatch.setattr("fourdpocket.workers.media_downloader.fetch_public_url", fetch)
 
         media_urls = [{"url": "https://example.com/huge.bin", "type": "binary", "role": "content"}]
 
@@ -278,25 +228,10 @@ class TestDownloadMediaRedirect:
         user = _make_media_user(db)
         item = _make_media_item(db, user)
 
-        # First redirect → internal IP
-        mock_head_response_1 = MagicMock()
-        mock_head_response_1.status_code = 301
-        mock_head_response_1.headers = {"location": "http://127.0.0.1/internal"}
-        mock_head_response_1.is_redirect = True
+        def fetch(*_args, **_kwargs):
+            raise BlockedURLError("Redirect denied by the public URL policy")
 
-        def mock_head(url, **kwargs):
-            if "internal" in url:
-                raise RuntimeError("SSRF blocked")
-            return mock_head_response_1
-
-        mock_http = MagicMock()
-        mock_http.__enter__ = MagicMock(return_value=mock_http)
-        mock_http.__exit__ = MagicMock(return_value=False)
-        mock_http.head.return_value = mock_head_response_1
-
-        monkeypatch.setattr("httpx.Client", lambda *a, **kw: mock_http)
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("fourdpocket.storage.local.LocalStorage", lambda: MagicMock(save_file=lambda *a: "media/fake"))
+        monkeypatch.setattr("fourdpocket.workers.media_downloader.fetch_public_url", fetch)
 
         media_urls = [{"url": "https://example.com/image.png", "type": "image", "role": "thumbnail"}]
         result = download_media.call_local(str(item.id), str(user.id), media_urls)
@@ -313,16 +248,10 @@ class TestDownloadMediaRedirect:
         user = _make_media_user(db)
         item = _make_media_item(db, user)
 
-        mock_head_response = MagicMock()
-        mock_head_response.status_code = 301
-        mock_head_response.headers = {"location": "https://example.com/next"}
-        mock_head_response.is_redirect = True
+        def fetch(*_args, **_kwargs):
+            raise httpx.TooManyRedirects("Redirect limit reached")
 
-        def mock_head(url, **kwargs):
-            return mock_head_response
-
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("fourdpocket.storage.local.LocalStorage", lambda: MagicMock(save_file=lambda *a: "media/fake"))
+        monkeypatch.setattr("fourdpocket.workers.media_downloader.fetch_public_url", fetch)
 
         media_urls = [{"url": "https://example.com/image.png", "type": "image", "role": "thumbnail"}]
         result = download_media.call_local(str(item.id), str(user.id), media_urls)
@@ -346,30 +275,11 @@ class TestDownloadMediaRedirect:
         db.add(item)
         db.commit()
 
-        class MockHeadResponse:
-            is_redirect = False
+        monkeypatch.setattr(
+            "fourdpocket.workers.media_downloader.fetch_public_url",
+            lambda *_args, **_kwargs: httpx.Response(200, content=b"\x89PNG\r\n\x1a\n\x00fake"),
+        )
 
-        def mock_head(url, **kwargs):
-            return MockHeadResponse()
-
-        class MockStream:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-            def raise_for_status(self):
-                pass
-
-            def iter_bytes(self, chunk_size):
-                yield b"\x89PNG\r\n\x1a\n\x00fake"
-
-        def mock_stream(method, url, **kwargs):
-            return MockStream()
-
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("httpx.stream", mock_stream)
         monkeypatch.setattr("fourdpocket.storage.local.LocalStorage", lambda: MagicMock(save_file=lambda *a: "media/new.png"))
 
         media_urls = [{"url": "https://example.com/image.png", "type": "image", "role": "thumbnail"}]
@@ -382,41 +292,6 @@ class TestDownloadMediaRedirect:
         assert len(item.media) == 1
         # local_path should be updated
         assert item.media[0].get("local_path") == "media/new.png"
-
-
-class TestDownloadVideoRedirect:
-    """Redirect following in download_video."""
-
-    def test_download_video_redirect(self, monkeypatch, tmp_path):
-        """httpx.head returns 302 redirect → follow to final URL."""
-        from fourdpocket.workers.media_downloader import download_video
-
-        redirect_response = MagicMock()
-        redirect_response.status_code = 302
-        redirect_response.headers = {"location": "https://real-cdn.com/video.mp4"}
-        redirect_response.is_redirect = True
-
-        final_response = MagicMock()
-        final_response.status_code = 200
-        final_response.headers = {}
-        final_response.is_redirect = False
-
-        call_count = [0]
-
-        def mock_head(url, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return redirect_response
-            return final_response
-
-        monkeypatch.setattr("httpx.head", mock_head)
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: type("R", (), {"returncode": 1})())
-
-        result = download_video("https://example.com/redirect.mp4", str(tmp_path))
-        # SSRF protection kicks in after redirect chain resolves IP
-        # (download_video validates via _is_safe_media_url which checks resolved IPs)
-        # The key is it follows the redirect, not rejects immediately
-        assert call_count[0] >= 1
 
 
 class TestDownloadVideo:
@@ -443,9 +318,11 @@ class TestDownloadVideo:
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        result = download_video("https://example.com/video.mp4", str(tmp_path))
-        # returncode=0 but no file on disk → None
-        assert result is None
+        monkeypatch.setattr("fourdpocket.workers.media_downloader._is_safe_media_url", lambda _url: True)
+        output = tmp_path / "video.mp4"
+        output.touch()
+        result = download_video("https://www.youtube.com/watch?v=fixture", str(tmp_path))
+        assert result == str(output)
 
     def test_download_video_yt_dlp_failure(self, monkeypatch, tmp_path):
         """yt-dlp non-zero return code yields None."""
@@ -454,5 +331,6 @@ class TestDownloadVideo:
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        result = download_video("https://example.com/video.mp4", str(tmp_path))
+        monkeypatch.setattr("fourdpocket.workers.media_downloader._is_safe_media_url", lambda _url: True)
+        result = download_video("https://www.youtube.com/watch?v=fixture", str(tmp_path))
         assert result is None

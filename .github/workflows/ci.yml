@@ -94,7 +94,10 @@ jobs:
         run: |
           docker run -d --name 4dp-smoke -p 4040:4040 \
             -e FDP_DATABASE__URL=sqlite:////data/4dpocket.db \
-            -e FDP_AUTH__MODE=single \
+            -e FDP_AUTH__MODE=multi \
+            -e FDP_AUTH__ALLOW_INVITES=true \
+            -e FDP_AUTH__ALLOW_REGISTRATION=true \
+            -e FDP_SERVER__PUBLIC_URL=http://127.0.0.1:4040 \
             4dpocket:ci
 
           # Wait for health
@@ -124,4 +127,18 @@ jobs:
           fi
           echo "API health: OK ($STATUS)"
 
-          docker stop 4dp-smoke
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the built app in Chromium
+        working-directory: frontend
+        run: |
+          npm install --global pnpm@11.22.0
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec playwright install --with-deps chromium
+          node ../tests/uat/invites.mjs
+
+      - name: Remove smoke-test container and volume
+        if: always()
+        run: docker rm -fv 4dp-smoke

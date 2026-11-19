@@ -113,7 +113,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60, trust_proxy=settings.server.trust_proxy)
+app.add_middleware(
+    RateLimitMiddleware,
+    max_requests=100,
+    window_seconds=60,
+    trust_proxy=settings.server.trust_proxy,
+    path_prefixes=("/api/", "/mcp"),
+)
 
 # Middleware is applied in LIFO order in Starlette/FastAPI.
 # Add order: SecurityHeaders first so it wraps everything, then RequestID.

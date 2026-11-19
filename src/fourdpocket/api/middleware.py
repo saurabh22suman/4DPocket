@@ -15,11 +15,15 @@ _MAX_TRACKED_IPS = 10000
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Thread-safe sliding window rate limiter."""
 
-    def __init__(self, app, max_requests: int = 1000, window_seconds: int = 60, trust_proxy: bool = False):
+    def __init__(
+        self, app, max_requests: int = 1000, window_seconds: int = 60,
+        trust_proxy: bool = False, path_prefixes: tuple[str, ...] = (),
+    ):
         super().__init__(app)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.trust_proxy = trust_proxy
+        self.path_prefixes = path_prefixes
         self._requests: dict[str, list[float]] = defaultdict(list)
         self._lock = threading.Lock()
 
@@ -32,6 +36,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next):
+        if self.path_prefixes and not request.url.path.startswith(self.path_prefixes):
+            return await call_next(request)
+
         client_ip = self._get_client_ip(request)
         now = time.time()
         cutoff = now - self.window_seconds

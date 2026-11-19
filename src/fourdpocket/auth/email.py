@@ -1,6 +1,6 @@
 """Pluggable email sender.
 
-Default: log to console (good for self-hosters until they wire SMTP).
+Email delivery is disabled until the administrator configures SMTP.
 Configure via FDP_EMAIL__SMTP_HOST env var to switch to real delivery.
 """
 
@@ -29,23 +29,14 @@ def send_email(
     body_text: str,
     body_html: str | None = None,
 ) -> bool:
-    """Send an email via SMTP if configured, else log to console.
-
-    Returns True when the email was dispatched (real SMTP) or logged
-    (unconfigured). Returns False only on SMTP delivery failure.
-    """
+    """Return whether SMTP accepted the message. Never log its contents."""
     from fourdpocket.config import get_settings
 
     cfg = get_settings().email
 
     if not cfg.smtp_host:
-        logger.info(
-            "EMAIL[unconfigured] to=%s subject=%s body=%s",
-            to,
-            subject,
-            body_text,
-        )
-        return True
+        logger.info("Email delivery skipped because SMTP is unconfigured")
+        return False
 
     html = body_html or _wrap_html(subject, body_text)
 
@@ -65,5 +56,5 @@ def send_email(
             smtp.sendmail(msg["From"], [to], msg.as_string())
         return True
     except Exception as exc:
-        logger.error("EMAIL[send_failed] to=%s subject=%s error=%s", to, subject, exc)
+        logger.error("Email delivery failed (%s)", type(exc).__name__)
         return False

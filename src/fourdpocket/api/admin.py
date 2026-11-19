@@ -2,9 +2,11 @@
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
@@ -14,6 +16,9 @@ from fourdpocket.api.deps import (
     require_admin,
     require_jwt_session,
 )
+from fourdpocket.auth.tokens import generate_token
+from fourdpocket.config import get_settings
+from fourdpocket.models.account_invite import AccountInvite
 from fourdpocket.models.api_token import ApiToken, ApiTokenCollection
 from fourdpocket.models.base import UserRole
 from fourdpocket.models.collection import Collection
@@ -24,6 +29,30 @@ from fourdpocket.models.tag import Tag
 from fourdpocket.models.user import User, UserRead
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+@router.post("/invites", status_code=201)
+def create_invite(
+    response: Response,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    _: None = Depends(require_jwt_session),
+):
+    """Issue a registration link valid for one account and 24 hours."""
+    settings = get_settings()
+    if settings.auth.mode != "multi" or not settings.auth.allow_invites:
+        raise HTTPException(status_code=403, detail="Account invitations are disabled")
+
+    now = datetime.now(timezone.utc)
+    # Expired invitations are no longer usable and need not occupy storage.
+    db.exec(sa_delete(AccountInvite).where(AccountInvite.expires_at <= now))
+    raw, token_hash = generate_token()
+    expires_at = now + timedelta(hours=24)
+    db.add(AccountInvite(token_hash=token_hash, expires_at=expires_at))
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    url = f"{settings.server.public_url.rstrip('/')}/register#invite={raw}"
+    return {"url": url, "expires_at": expires_at}
 
 
 @router.get("/stats")

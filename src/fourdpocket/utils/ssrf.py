@@ -1,93 +1,139 @@
-"""Shared SSRF protection utilities."""
+"""Public URL validation and bounded, DNS-pinned HTTP requests."""
 
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),  # AWS metadata / link-local
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
-]
+import httpx
+
+DEFAULT_BODY_LIMIT = 10 * 1024 * 1024
+_REDIRECTS = {301, 302, 303, 307, 308}
+
+
+class BlockedURLError(ValueError):
+    """The URL is outside the public HTTP fetch policy."""
+
+
+class ResponseTooLargeError(ValueError):
+    """The response exceeds the caller's byte limit."""
+
+
+def _public_ip(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast and not ip.is_reserved
+
+
+def resolve_and_check(url: str | httpx.URL) -> str | None:
+    """Return a public IP to connect to, rejecting mixed public/private answers."""
+    try:
+        parsed = httpx.URL(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.host
+            or parsed.username
+            or parsed.password
+        ):
+            return None
+        answers = socket.getaddrinfo(parsed.raw_host.decode("ascii"), None)
+        addresses = list(dict.fromkeys(answer[4][0] for answer in answers))
+        if not addresses or not all(_public_ip(address) for address in addresses):
+            return None
+        # Prefer IPv4 on dual-stack sites while retaining IPv6-only support.
+        return next((address for address in addresses if ":" not in address), addresses[0])
+    except (OSError, ValueError, httpx.InvalidURL):
+        return None
 
 
 def is_safe_url(url: str) -> bool:
-    """Return True only if the URL targets a public, routable address.
+    """Check a URL before storing it. Use the stream helper for network access."""
+    return resolve_and_check(url) is not None
 
-    Checks:
-    - Scheme must be http or https
-    - Hostname must resolve
-    - Resolved IP must not be in any blocked (internal/loopback) network
 
-    TOCTOU limitation: DNS is resolved at validation time, not at TCP-connect
-    time. A DNS rebinding attack can return a public IP here and a private IP
-    at connect time. To eliminate this window use ``resolve_and_check`` below,
-    which returns the pre-resolved safe IP that callers can pin via an httpx
-    transport, ensuring the same address is used for both the check and the
-    connection.
-    """
+@contextmanager
+def stream_public_url(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float = 20,
+    max_redirects: int = 5,
+) -> Iterator[httpx.Response]:
+    """Open a public GET with the checked address, original Host and TLS SNI."""
     try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        hostname = parsed.hostname
-        if not hostname:
-            return False
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for _family, _, _, _, sockaddr in addr_info:
-                ip = ipaddress.ip_address(sockaddr[0])
-                for network in _BLOCKED_NETWORKS:
-                    if ip in network:
-                        return False
-        except socket.gaierror:
-            return False
-        return True
-    except Exception:
-        return False
+        current = httpx.URL(url)
+    except httpx.InvalidURL as exc:
+        raise BlockedURLError("Invalid public URL") from exc
+    request_headers = httpx.Headers(headers)
+    for name in ("authorization", "proxy-authorization", "cookie"):
+        request_headers.pop(name, None)
+    request_headers["Accept-Encoding"] = "identity"
+
+    for _ in range(max_redirects + 1):
+        address = resolve_and_check(current)
+        if address is None:
+            raise BlockedURLError("URL blocked: destination must resolve to public addresses")
+        request_headers["Host"] = current.netloc.decode("ascii")
+        hostname = current.raw_host.decode("ascii")
+
+        # A separate client per hop keeps TLS connections from being reused
+        # across different hostnames that resolve to the same address.
+        with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            with client.stream(
+                "GET",
+                current.copy_with(host=address),
+                headers=request_headers,
+                extensions={"sni_hostname": hostname},
+            ) as response:
+                response.request = httpx.Request("GET", current)
+                location = response.headers.get("location")
+                if response.status_code in _REDIRECTS and location and max_redirects:
+                    try:
+                        current = current.join(location)
+                    except httpx.InvalidURL as exc:
+                        raise BlockedURLError("Invalid redirect URL") from exc
+                    continue
+                yield response
+                return
+
+    raise httpx.TooManyRedirects("Too many public URL redirects")
 
 
-def resolve_and_check(url: str) -> str | None:
-    """Resolve the URL's hostname, verify it is safe, and return the IP string.
+def iter_bounded(response: httpx.Response, max_bytes: int) -> Iterator[bytes]:
+    length = response.headers.get("content-length", "")
+    if length.isascii() and length.isdecimal() and (
+        len(length) > len(str(max_bytes)) or int(length) > max_bytes
+    ):
+        raise ResponseTooLargeError("Upstream response exceeds the byte limit")
 
-    Returns the first safe resolved IP address, or None if the host resolves
-    to a blocked address or cannot be resolved. Callers that need DNS-rebinding
-    protection should use the returned IP as the connect address (e.g. by
-    building an httpx transport that forces connections to this IP while
-    passing the original hostname as the SNI/Host header).
+    total = 0
+    for chunk in response.iter_bytes(chunk_size=65536):
+        total += len(chunk)
+        if total > max_bytes:
+            raise ResponseTooLargeError("Upstream response exceeds the byte limit")
+        yield chunk
 
-    Example usage with httpx (DNS-rebinding-safe):
 
-        ip = resolve_and_check(url)
-        if ip is None:
-            raise ValueError("URL blocked")
-        # Replace hostname with the pre-checked IP in the URL, keeping Host header:
-        import httpx
-        from urllib.parse import urlparse, urlunparse
-        parsed = urlparse(url)
-        safe_url = urlunparse(parsed._replace(netloc=ip))
-        async with httpx.AsyncClient() as client:
-            r = await client.get(safe_url, headers={"Host": parsed.hostname})
-    """
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return None
-        hostname = parsed.hostname
-        if not hostname:
-            return None
-        addr_info = socket.getaddrinfo(hostname, None)
-        for _family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            ip = ipaddress.ip_address(ip_str)
-            blocked = any(ip in net for net in _BLOCKED_NETWORKS)
-            if not blocked:
-                return ip_str
-        return None
-    except Exception:
-        return None
+def fetch_public_url(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float = 20,
+    max_redirects: int = 5,
+    max_bytes: int = DEFAULT_BODY_LIMIT,
+) -> httpx.Response:
+    with stream_public_url(
+        url, headers=headers, timeout=timeout, max_redirects=max_redirects
+    ) as response:
+        response.raise_for_status()
+        body = b"".join(iter_bounded(response, max_bytes))
+        response_headers = response.headers.copy()
+        for name in ("content-encoding", "transfer-encoding", "content-length"):
+            response_headers.pop(name, None)
+        return httpx.Response(
+            response.status_code,
+            headers=response_headers,
+            content=body,
+            request=response.request,
+        )

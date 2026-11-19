@@ -95,6 +95,22 @@ def clear_search_cache():
     _search_cache._cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def match_pinned_fetches_by_hostname(monkeypatch):
+    """Let RESPX fixtures use a public URL while the transport dials a checked IP."""
+    from respx.router import MockRouter
+
+    handle = MockRouter.handler
+
+    def match(router, request):
+        hostname = request.extensions.get("sni_hostname")
+        if hostname:
+            request.url = request.url.copy_with(host=hostname)
+        return handle(router, request)
+
+    monkeypatch.setattr(MockRouter, "handler", match)
+
+
 @pytest.fixture(name="mock_chat_provider")
 def mock_chat_provider_fixture(monkeypatch):
     """Inject a deterministic mock chat provider for AI tests."""
@@ -128,7 +144,7 @@ def mock_embedding_provider_fixture(monkeypatch):
 
 
 @pytest.fixture(name="client")
-def test_client(engine):
+def test_client(engine, monkeypatch):
     import fourdpocket.db.session as db_module
 
     # Monkey-patch the engine so get_session() uses our test engine
@@ -136,6 +152,8 @@ def test_client(engine):
     db_module._engine = engine
 
     from fourdpocket.main import app
+    # The fixture above already creates the current schema in memory.
+    monkeypatch.setattr("fourdpocket.main.init_db", lambda: None)
 
     # Force multi-user mode (requires explicit auth)
     settings = get_settings()

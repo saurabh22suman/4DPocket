@@ -1,22 +1,4 @@
-// Token stored in localStorage only as a "logged-in" indicator for UI state.
-// The actual auth token is in an httpOnly cookie set by the backend.
-// Browser automatically sends the cookie with same-origin requests.
-
-const LOGGED_IN_KEY = "4dp_logged_in";
-
-export function isLoggedIn(): boolean {
-  return localStorage.getItem(LOGGED_IN_KEY) === "1";
-}
-
-export function setLoggedIn(): void {
-  localStorage.setItem(LOGGED_IN_KEY, "1");
-}
-
-export function clearLoggedIn(): void {
-  localStorage.removeItem(LOGGED_IN_KEY);
-}
-
-// Create base fetch wrapper - auth handled via httpOnly cookie (browser auto-sends it)
+// Same-origin requests use the server's HttpOnly session cookie.
 export async function apiFetch(
   url: string,
   options: RequestInit = {}
@@ -34,8 +16,8 @@ export async function apiFetch(
 
   // Auto-redirect to login on 401 (except for auth endpoints)
   if (res.status === 401 && !url.includes("/auth/")) {
-    clearLoggedIn();
-    const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+    const { pathname, search, hash } = window.location;
+    const returnTo = encodeURIComponent(pathname + search + hash);
     window.location.href = `/login?returnTo=${returnTo}`;
   }
 
@@ -105,13 +87,10 @@ export const api = {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Invalid credentials");
-    // Token stored in httpOnly cookie by backend; localStorage just tracks login state
-    setLoggedIn();
   },
 
   async logout(): Promise<void> {
     await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
-    clearLoggedIn();
   },
 
   async register(
@@ -119,12 +98,14 @@ export const api = {
     password: string,
     displayName?: string,
     username?: string,
+    inviteToken?: string,
   ): Promise<unknown> {
     return this.post("/api/v1/auth/register", {
       email,
       username: username || email.split("@")[0],
       password,
       display_name: displayName,
+      invite_token: inviteToken,
     });
   },
 };

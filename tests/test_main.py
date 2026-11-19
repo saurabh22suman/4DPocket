@@ -72,8 +72,7 @@ class TestMCPMount:
         """The MCP server is mounted at /mcp."""
         # The /mcp redirect route is registered
         app = client.app
-        routes = [r.path for r in app.routes]
-        assert "/mcp" in routes or any("/mcp" in str(r) for r in app.routes)
+        assert any(getattr(route, "path", None) == "/mcp" for route in app.routes)
 
     def test_mcp_trailing_slash_redirect(self, client):
         """GET /mcp redirects to /mcp/ with 307 status."""
@@ -116,7 +115,7 @@ class TestLifespanEvents:
         """Static assets path is configured without error."""
         # Verify the app has routes that can serve the frontend
         app = client.app
-        routes = [r.path for r in app.routes]
+        routes = [r.path for r in app.routes if hasattr(r, "path")]
         # SPA catch-all or static routes should be registered
         assert isinstance(routes, list)
 

@@ -93,7 +93,7 @@ class TestFetchRssFeed:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -139,7 +139,7 @@ class TestFetchRssFeed:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -177,7 +177,7 @@ class TestFetchRssFeed:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -221,7 +221,7 @@ class TestFetchRssFeed:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -240,7 +240,7 @@ class TestFetchRssFeed:
         user = _make_rss_user(db)
         feed = _make_rss_feed(db, user)
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.side_effect = OSError("network failure")
 
             count = fetch_rss_feed(feed, db)
@@ -271,7 +271,7 @@ class TestFetchRssFeed:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -333,7 +333,7 @@ class TestPollAllFeeds:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             poll_all_feeds()
@@ -365,7 +365,7 @@ class TestFetchRssFeedJson:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -436,7 +436,7 @@ class TestFetchRssFeedJson:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count = fetch_rss_feed(feed, db)
@@ -505,7 +505,7 @@ class TestRssFeedDedup:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count1 = fetch_rss_feed(feed1, db)
@@ -546,7 +546,7 @@ class TestRssFeedDedup:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
 
             count1 = fetch_rss_feed(feed, db)
@@ -604,7 +604,7 @@ class TestXxeProtection:
         mock_resp.is_redirect = False
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.get") as mock_get:
+        with patch("fourdpocket.workers.rss_worker.fetch_public_url") as mock_get:
             mock_get.return_value = mock_resp
             # defusedxml raises on DOCTYPE; fetch_rss_feed catches it and returns 0
             count = fetch_rss_feed(feed, db)

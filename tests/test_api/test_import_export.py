@@ -7,6 +7,17 @@ from starlette.testclient import TestClient
 
 
 class TestExportJSON:
+    def test_full_export_requires_interactive_session(self, client, auth_headers):
+        created = client.post(
+            "/api/v1/auth/tokens",
+            json={"name": "Export restriction test"},
+            headers=auth_headers,
+        )
+        assert created.status_code == 201
+        token = created.json()["token"]
+        response = client.get("/api/v1/export/json", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 403
+
     def test_export_json_returns_valid_json(self, client, auth_headers):
         # Create items first
         client.post(

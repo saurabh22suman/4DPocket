@@ -25,10 +25,10 @@ from fourdpocket.processors.base import (
     BaseProcessor,
     ProcessorResult,
     ProcessorStatus,
-    _is_safe_url,
 )
 from fourdpocket.processors.registry import register_processor
 from fourdpocket.processors.sections import Section
+from fourdpocket.utils.ssrf import fetch_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -367,17 +367,17 @@ class RedditProcessor(BaseProcessor):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
-        if not _is_safe_url(html_url):
-            raise ValueError("URL blocked: targets internal network")
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            for attempt in range(_FETCH_RETRIES):
-                r = await client.get(html_url, headers=headers)
-                if r.status_code == 403 and attempt < _FETCH_RETRIES - 1:
-                    await asyncio.sleep(_RETRY_DELAY * (attempt + 1))
-                    continue
-                break
-            r.raise_for_status()
-        return r.text, str(r.url)
+        for attempt in range(_FETCH_RETRIES):
+            try:
+                response = await asyncio.to_thread(
+                    fetch_public_url, html_url, timeout=20, headers=headers
+                )
+                return response.text, str(response.url)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 403 or attempt == _FETCH_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_RETRY_DELAY * (attempt + 1))
+        raise RuntimeError("Reddit fetch exhausted its retries")
 
     async def process(self, url: str, **kwargs) -> ProcessorResult:
         # redd.it shorteners and /s/ share links → resolve to the canonical

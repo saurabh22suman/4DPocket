@@ -1,29 +1,34 @@
-import { Navigate, Outlet } from "react-router-dom";
-import { isLoggedIn } from "@/api/client";
-import { useCurrentUser } from "@/hooks/use-auth";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { isAuthError, useCurrentUser } from "@/hooks/use-auth";
 import { Loader2 } from "lucide-react";
 
 export function AuthGuard() {
-  const loggedIn = isLoggedIn();
-  const { isLoading, isError } = useCurrentUser();
+  const { pathname, search, hash } = useLocation();
+  const { error, isPending, refetch } = useCurrentUser();
 
-  if (!loggedIn) {
-    return <Navigate to="/login" replace />;
+  if (isAuthError(error)) {
+    const returnTo = encodeURIComponent(pathname + search + hash);
+    return <Navigate to={`/login?returnTo=${returnTo}`} replace />;
   }
 
-  if (isLoading) {
+  if (isPending) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-950">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-8 h-8 animate-spin text-sky-600" />
-          <span className="text-sm text-gray-500">Loading...</span>
-        </div>
+      <div role="status" className="flex items-center justify-center min-h-dvh bg-gray-50 dark:bg-gray-950">
+        <Loader2 aria-hidden="true" className="mr-3 size-6 motion-safe:animate-spin text-sky-700" />
+        Loading…
       </div>
     );
   }
 
-  if (isError) {
-    return <Navigate to="/login" replace />;
+  if (error) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
+        <p role="alert">Couldn’t check your session. Check your connection and try again.</p>
+        <button type="button" onClick={() => void refetch()} className="rounded-lg bg-sky-800 px-4 py-2 text-white focus-visible:outline-2 focus-visible:outline-offset-2">
+          Try again
+        </button>
+      </div>
+    );
   }
 
   return <Outlet />;

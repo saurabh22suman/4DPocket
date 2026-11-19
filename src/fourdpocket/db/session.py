@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from fourdpocket.config import get_settings
 
@@ -47,51 +49,26 @@ def get_session():
         yield session
 
 
-def _ensure_columns(engine):
-    """Auto-sync: add any columns defined in models but missing from the database.
-
-    Compares SQLModel metadata against the live database schema using
-    SQLAlchemy inspection. This eliminates the need for a manual migration
-    list — every new model column is picked up automatically on startup.
-    """
-    from sqlalchemy import inspect, text
-
-    inspector = inspect(engine)
-    db_tables = set(inspector.get_table_names())
-
-    # Map SQLAlchemy types to portable SQL type strings
-    def _sql_type(col):
-        try:
-            return col.type.compile(engine.dialect)
-        except Exception:
-            return "TEXT"
-
-    with engine.connect() as conn:
-        for table in SQLModel.metadata.sorted_tables:
-            if table.name not in db_tables:
-                continue  # table doesn't exist yet; create_all handles it
-
-            db_columns = {c["name"] for c in inspector.get_columns(table.name)}
-
-            for col in table.columns:
-                if col.name in db_columns:
-                    continue
-                col_type = _sql_type(col)
-                try:
-                    conn.execute(text(
-                        f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}'
-                    ))
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-
-
 def init_db():
-    import fourdpocket.models  # noqa: F401 - ensure all models are registered
+    """Bring the configured database to the Alembic head revision."""
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
 
-    engine = get_engine()
-    SQLModel.metadata.create_all(engine)
-    _ensure_columns(engine)
+    with get_engine().connect() as connection:
+        sqlite = connection.dialect.name == "sqlite"
+        if sqlite:
+            # Alembic batch migrations may rebuild referenced SQLite tables.
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+        config.attributes["connection"] = connection
+        try:
+            command.upgrade(config, "head")
+        finally:
+            if sqlite:
+                if connection.in_transaction():
+                    connection.rollback()
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
 
 
 def reset_engine():

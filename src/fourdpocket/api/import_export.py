@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from fourdpocket.api.deps import get_current_user, get_db, require_pat_editor
+from fourdpocket.api.deps import get_current_user, get_db, require_jwt_session, require_pat_editor
 from fourdpocket.models.base import ItemType, SourcePlatform
 from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.user import User
@@ -129,8 +129,9 @@ def export_bookmarks(
     format: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_jwt_session),
 ):
-    """Export bookmarks in various formats."""
+    """Export the full library from an interactive session."""
     items = db.exec(
         select(KnowledgeItem).where(KnowledgeItem.user_id == current_user.id)
     ).all()

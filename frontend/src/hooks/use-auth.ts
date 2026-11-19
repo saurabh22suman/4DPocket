@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, isLoggedIn } from "@/api/client";
+import { api } from "@/api/client";
 
 interface User {
   id: string;
@@ -13,12 +13,19 @@ interface User {
   created_at: string;
 }
 
+const currentUserQuery = {
+  queryKey: ["currentUser"],
+  queryFn: () => api.get<User>("/api/v1/auth/me"),
+};
+
+export function isAuthError(error: unknown): boolean {
+  return error instanceof Error && /^(401|403):/.test(error.message);
+}
+
 export function useCurrentUser() {
-  return useQuery<User>({
-    queryKey: ["currentUser"],
-    queryFn: () => api.get("/api/v1/auth/me"),
-    enabled: isLoggedIn(),
-    retry: (failureCount, err) => failureCount < 1 && !(err instanceof Error && err.message.startsWith("401")),
+  return useQuery({
+    ...currentUserQuery,
+    retry: (failureCount, error) => failureCount < 1 && !isAuthError(error),
   });
 }
 
@@ -27,17 +34,15 @@ export function useLogin() {
   return useMutation({
     mutationFn: async (data: { identifier: string; password: string }) => {
       await api.login(data.identifier, data.password);
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["currentUser"] });
+      await qc.fetchQuery({ ...currentUserQuery, staleTime: 0 });
     },
   });
 }
 
 export function useRegister() {
   return useMutation({
-    mutationFn: (data: { username: string; email: string; password: string; display_name?: string }) =>
-      api.register(data.email, data.password, data.display_name, data.username),
+    mutationFn: (data: { username: string; email: string; password: string; display_name?: string; invite_token?: string }) =>
+      api.register(data.email, data.password, data.display_name, data.username, data.invite_token),
   });
 }
 

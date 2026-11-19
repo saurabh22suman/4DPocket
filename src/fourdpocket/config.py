@@ -80,6 +80,7 @@ class AuthSettings(BaseSettings):
     token_expire_minutes: int = 10080  # 7 days
     mode: str = "single"  # "single" or "multi"
     allow_registration: bool = True
+    allow_invites: bool = False
 
 
 class StorageSettings(BaseSettings):

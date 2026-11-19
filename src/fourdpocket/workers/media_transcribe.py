@@ -17,10 +17,8 @@ blocks the rest of enrichment.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import shutil
-import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -28,29 +26,10 @@ from pathlib import Path
 import httpx
 
 from fourdpocket.processors.sections import Section, make_section_id
+from fourdpocket.utils.ssrf import iter_bounded, stream_public_url
 
 logger = logging.getLogger(__name__)
 
-
-@contextlib.contextmanager
-def _prefer_ipv4():
-    """Force IPv4-only DNS resolution within the block.
-
-    Some hosts (e.g. the DeluxHost VPS) advertise an IPv6 default route that
-    isn't actually routable, so dual-stack targets like Instagram's CDN fail
-    with ``[Errno 101] Network is unreachable`` on the v6 attempt. yt-dlp gets
-    ``-4``; for httpx we constrain ``getaddrinfo`` to A records here.
-    """
-    orig = socket.getaddrinfo
-
-    def _v4(host, port, family=0, *args, **kwargs):
-        return orig(host, port, socket.AF_INET, *args, **kwargs)
-
-    socket.getaddrinfo = _v4
-    try:
-        yield
-    finally:
-        socket.getaddrinfo = orig
 
 _WHISPER_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 _MAX_BYTES = 25 * 1024 * 1024  # Groq Whisper hard limit
@@ -116,50 +95,27 @@ def _media_proxy_for(url: str, settings) -> str | None:
     return proxy if any(h in low for h in _PROXIED_HOSTS) else None
 
 
-def _download_direct(url: str, dest_dir: str, proxy: str | None = None) -> str | None:
-    """Stream a direct media URL to disk (SSRF-guarded, size-capped).
-
-    When ``proxy`` is set, egress + DNS happen proxy-side (socks5h), so the
-    local IPv4-forcing is skipped; otherwise we force IPv4 (this host's v6 is
-    not routable).
-    """
-    from fourdpocket.workers.media_downloader import _is_safe_media_url
-
-    if not _is_safe_media_url(url):
-        logger.warning("SSRF blocked transcription media URL: %s", url)
-        return None
+def _download_direct(url: str, dest_dir: str) -> str | None:
+    """Stream media to disk with per-hop address checks and a byte limit."""
     path = Path(dest_dir) / "media.mp4"
-    # Allow the video to exceed the Whisper limit a bit — we downsize to audio
-    # via ffmpeg afterward when needed.
-    hard_cap = _MAX_BYTES * 8
-    client_kwargs: dict = {"timeout": 60, "follow_redirects": True}
-    if proxy:
-        client_kwargs["proxy"] = proxy
-    dns_ctx = contextlib.nullcontext() if proxy else _prefer_ipv4()
     try:
-        with dns_ctx, httpx.Client(**client_kwargs) as client, client.stream(
-            "GET", url, headers={"User-Agent": _BROWSER_UA},
-        ) as r:
-            r.raise_for_status()
-            total = 0
-            with open(path, "wb") as f:
-                for chunk in r.iter_bytes(65536):
-                    total += len(chunk)
-                    if total > hard_cap:
-                        logger.warning("transcription media exceeded cap, truncating: %s", url)
-                        break
-                    f.write(chunk)
-        return str(path) if path.exists() and path.stat().st_size > 0 else None
+        with stream_public_url(url, timeout=60, headers={"User-Agent": _BROWSER_UA}) as response:
+            response.raise_for_status()
+            with path.open("wb") as output:
+                for chunk in iter_bounded(response, _MAX_BYTES * 8):
+                    output.write(chunk)
+        return str(path) if path.stat().st_size else None
     except Exception as e:
-        logger.warning("direct media download failed (%s): %s", url, e)
+        path.unlink(missing_ok=True)
+        logger.warning("Direct transcription download failed (%s)", type(e).__name__)
         return None
 
 
 def _download_ytdlp(url: str, dest_dir: str, proxy: str | None = None) -> str | None:
     """Download bestaudio via yt-dlp (extract to mp3 when ffmpeg is available)."""
-    from fourdpocket.workers.media_downloader import _is_safe_media_url
+    from fourdpocket.workers.media_downloader import _is_safe_media_url, supported_video_url
 
-    if not _is_safe_media_url(url):
+    if not supported_video_url(url) or not _is_safe_media_url(url):
         logger.warning("SSRF blocked yt-dlp transcription URL: %s", url)
         return None
     out_tmpl = str(Path(dest_dir) / "audio.%(ext)s")
@@ -167,14 +123,14 @@ def _download_ytdlp(url: str, dest_dir: str, proxy: str | None = None) -> str | 
     # worker. With a proxy, egress/DNS go proxy-side; without one, force IPv4
     # (this host's v6 isn't routable).
     base = ["yt-dlp", "--no-playlist", "--socket-timeout", "30",
-            "-f", "bestaudio/best", "--max-filesize", "100M", "-o", out_tmpl, url]
+            "-f", "bestaudio/best", "--max-filesize", "100M", "-o", out_tmpl]
     if proxy:
         base += ["--proxy", proxy]
     else:
         base.insert(1, "-4")
     # Prefer audio extraction (needs ffmpeg); fall back to the raw bestaudio
     # container if extraction isn't possible.
-    attempts = [base + ["-x", "--audio-format", "mp3"], base]
+    attempts = [base + ["-x", "--audio-format", "mp3", "--", url], base + ["--", url]]
     for cmd in attempts:
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -198,7 +154,7 @@ def _ensure_under_limit(path: str, dest_dir: str) -> str | None:
     out = str(Path(dest_dir) / "audio_small.mp3")
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(p), "-vn", "-ac", "1", "-ar", "16000",
+            ["ffmpeg", "-y", "-protocol_whitelist", "file,pipe", "-i", str(p), "-vn", "-ac", "1", "-ar", "16000",
              "-b:a", "64k", out],
             capture_output=True, timeout=300,
         )
@@ -250,7 +206,7 @@ def _ocr_frames(video_path: str, dest_dir: str, max_frames: int = 12) -> str:
     frames_dir.mkdir(exist_ok=True)
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=1/2",
+            ["ffmpeg", "-y", "-protocol_whitelist", "file,pipe", "-i", video_path, "-vf", "fps=1/2",
              "-frames:v", str(max_frames), str(frames_dir / "f%03d.png")],
             capture_output=True, timeout=120,
         )
@@ -334,7 +290,7 @@ def transcribe_item(item, settings) -> list[Section]:
     seed = item.url or str(item.id)
     with tempfile.TemporaryDirectory(prefix="fdp_tx_") as tmp:
         media_path = (
-            _download_direct(url, tmp, proxy=_media_proxy_for(url, settings))
+            _download_direct(url, tmp)
             if mode == "direct"
             else _download_ytdlp(url, tmp, proxy=_media_proxy_for(url, settings))
         )

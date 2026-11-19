@@ -5,7 +5,6 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from huey import crontab
 from sqlmodel import Session, select
 
@@ -19,7 +18,7 @@ def _strip_html_tags(text: str | None) -> str | None:
 from fourdpocket.models.base import ItemType, SourcePlatform
 from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.rss_feed import RSSFeed
-from fourdpocket.utils.ssrf import is_safe_url
+from fourdpocket.utils.ssrf import fetch_public_url, is_safe_url
 from fourdpocket.workers import huey
 
 logger = logging.getLogger(__name__)
@@ -120,21 +119,7 @@ def fetch_rss_feed(feed: RSSFeed, db: Session) -> int:
     try:
         import defusedxml.ElementTree as ET  # noqa: N817
 
-        if not is_safe_url(feed.url):
-            logger.warning("SSRF blocked: RSS feed URL %s targets internal network", feed.url)
-            return 0
-
-        resp = httpx.get(feed.url, timeout=15, follow_redirects=False)
-        # Manually follow redirects with SSRF check per hop
-        for _ in range(5):
-            if not resp.is_redirect:
-                break
-            location = resp.headers.get("location", "")
-            if not location or not is_safe_url(location):
-                logger.warning("SSRF blocked: RSS redirect to %s", location)
-                return 0
-            resp = httpx.get(location, timeout=15, follow_redirects=False)
-        resp.raise_for_status()
+        resp = fetch_public_url(feed.url, timeout=15)
 
         # JSON Feed detection
         content_type = resp.headers.get("content-type", "")
