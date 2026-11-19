@@ -37,6 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Runtime writes are confined to the persistent data directory.
+RUN groupadd -r fourdpocket && useradd -r -g fourdpocket -d /data fourdpocket \
+    && install -d -m 0700 -o fourdpocket -g fourdpocket /data
+
 # Copy built assets
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
@@ -53,13 +57,11 @@ RUN chmod +x /app/docker-entrypoint.sh
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src" \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/data \
     FDP_STORAGE__BASE_PATH=/data \
     FDP_SERVER__HOST=0.0.0.0 \
     FDP_SERVER__PORT=4040
-
-# Create non-root user
-RUN groupadd -r fourdpocket && useradd -r -g fourdpocket -d /app fourdpocket \
-    && mkdir -p /data && chown -R fourdpocket:fourdpocket /app /data
 
 USER fourdpocket
 
