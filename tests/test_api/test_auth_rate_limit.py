@@ -5,6 +5,8 @@ Regression tests for:
 - Password-reset/request: IP-level rate limiting
 """
 
+from fourdpocket.config import get_settings
+
 
 def _register(client, email="ratelimit@example.com", username="ratelimituser", password="Limit123!"):
     client.post(
@@ -36,8 +38,11 @@ def test_login_rate_limited_after_five_failures(client, db):
     assert "locked" in sixth.json()["detail"].lower()
 
 
-def test_password_reset_request_rate_limited(client, db):
+def test_password_reset_request_rate_limited(client, db, monkeypatch):
     """More than 3 reset requests from same IP within an hour → 429."""
+    settings = get_settings().email
+    monkeypatch.setattr(settings, "smtp_host", "smtp.test.example.com")
+    monkeypatch.setattr(settings, "from_address", "pocket@example.com")
     # The endpoint allows max_attempts=3; the 4th from the same IP is blocked.
     for i in range(3):
         resp = client.post(

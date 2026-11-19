@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/api/client";
 import { useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { LogIn, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
-import { useLogin } from "@/hooks/use-auth";
+import { useAuthConfig, useLogin } from "@/hooks/use-auth";
 
 function DoraemonLogo() {
   return (
@@ -21,11 +19,9 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { state } = useLocation();
   const login = useLogin();
-  const { data: authConfig } = useQuery({
-    queryKey: ["auth-config"],
-    queryFn: () => api.get<{ registration_enabled: boolean }>("/api/v1/auth/config"),
-  });
+  const { data: authConfig } = useAuthConfig();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,6 +59,11 @@ export default function Login() {
           onSubmit={handleSubmit}
           className="bg-white dark:bg-gray-900 rounded-2xl border border-sky-100 dark:border-gray-800 shadow-sm p-6 space-y-4"
         >
+          {state?.passwordReset && (
+            <p role="status" className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800 dark:bg-green-950/30 dark:text-green-300">
+              Password reset. Sign in with your new password.
+            </p>
+          )}
           <div>
             <label htmlFor="login-identifier" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
               Email or Username
@@ -83,9 +84,14 @@ export default function Login() {
           </div>
 
           <div>
-            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-              Password
-            </label>
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <label htmlFor="login-password" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Password
+              </label>
+              <Link to="/forgot-password" className="text-sm font-medium text-sky-800 hover:underline dark:text-sky-300">
+                Forgot password?
+              </Link>
+            </div>
             <div className="relative">
               <input
                 id="login-password"

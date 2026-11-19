@@ -173,11 +173,14 @@ class EmailSettings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str = ""
     smtp_password: str = ""
-    smtp_use_tls: bool = True
+    smtp_use_tls: bool = True  # STARTTLS
+    smtp_use_ssl: bool = False  # TLS from connection start
     from_address: str = ""
     from_name: str = "4dpocket"
-    # When smtp_host is empty the sender logs to stdout only.
-    # Self-hosters set FDP_EMAIL__SMTP_HOST (and friends) to enable real delivery.
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.smtp_host.strip() and self.from_address.strip())
 
 
 class ServerSettings(BaseSettings):

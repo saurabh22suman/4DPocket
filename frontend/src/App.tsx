@@ -15,6 +15,7 @@ const Notes = lazy(() => import("./pages/Notes"));
 const Settings = lazy(() => import("./pages/Settings"));
 const AddItem = lazy(() => import("./pages/AddItem"));
 const Login = lazy(() => import("./pages/Login"));
+const PasswordRecovery = lazy(() => import("./pages/PasswordRecovery"));
 const Register = lazy(() => import("./pages/Register"));
 const Admin = lazy(() => import("./pages/Admin"));
 const SharedWithMe = lazy(() => import("./pages/SharedWithMe"));
@@ -53,6 +54,8 @@ export default function App() {
         path="/register"
         element={<SuspenseWrap><Register /></SuspenseWrap>}
       />
+      <Route path="/forgot-password" element={<SuspenseWrap><PasswordRecovery /></SuspenseWrap>} />
+      <Route path="/reset-password" element={<SuspenseWrap><PasswordRecovery /></SuspenseWrap>} />
 
       {/* Protected routes - require authentication */}
       <Route element={<AuthGuard />}>

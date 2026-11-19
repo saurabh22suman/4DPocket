@@ -35,7 +35,9 @@ def create_access_token(user_id: uuid.UUID, expires_delta: timedelta | None = No
     payload = {
         "sub": str(user_id),
         "exp": expire,
-        "iat": now,
+        # Match the precision of password_changed_at so a user can sign in
+        # immediately after a credential change.
+        "iat": now.timestamp(),
         "iss": "4dpocket",
     }
     return jwt.encode(payload, settings.auth.secret_key, algorithm=_JWT_ALGORITHM)

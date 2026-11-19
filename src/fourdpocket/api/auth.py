@@ -2,12 +2,13 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from html import escape
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import text, update
+from sqlalchemy import or_, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
@@ -42,14 +43,19 @@ _RESET_TOKEN_TTL_MINUTES = 15
 _VERIFY_TOKEN_TTL_HOURS = 24
 
 
-def _send_password_reset_email(user: User, raw_token: str) -> None:
-    from fourdpocket.config import get_settings
+def _send_password_reset_email(email: str, raw_token: str) -> None:
     public_url = get_settings().server.public_url.rstrip("/")
-    link = f"{public_url}/reset-password?token={raw_token}"
+    # Fragments stay out of server request URLs and access logs.
+    link = f"{public_url}/reset-password#token={raw_token}"
+    expiry = f"This link expires in {_RESET_TOKEN_TTL_MINUTES} minutes."
     send_email(
-        to=user.email,
-        subject="Reset your 4dpocket password",
-        body_text=f"Click the link below to reset your password (expires in {_RESET_TOKEN_TTL_MINUTES} minutes):\n\n{link}\n\nIf you did not request a reset, ignore this email.",
+        to=email,
+        subject="Reset your 4DPocket password",
+        body_text=f"Reset your 4DPocket password\n\n{link}\n\n{expiry}\n\nIf you did not request a reset, ignore this email.",
+        body_html=(
+            f'<p><a href="{escape(link, quote=True)}">Reset your 4DPocket password</a></p>'
+            f"<p>{expiry} If you did not request a reset, ignore this email.</p>"
+        ),
     )
 
 
@@ -90,13 +96,15 @@ class RegistrationRequest(UserCreate):
 
 @router.get("/config")
 def auth_config(db: Session = Depends(get_db)):
-    auth = get_settings().auth
+    settings = get_settings()
+    auth = settings.auth
     instance = db.get(InstanceSettings, 1) if auth.allow_registration else None
     return {
         "registration_enabled": auth.allow_registration and (
             instance is None or instance.registration_enabled
         ),
         "invites_enabled": auth.mode == "multi" and auth.allow_invites,
+        "password_reset_enabled": auth.mode == "multi" and settings.email.configured,
     }
 
 
@@ -358,8 +366,7 @@ def delete_me(
     return None
 
 
-class PasswordChange(BaseModel):
-    current_password: str
+class NewPassword(BaseModel):
     new_password: str
 
     @field_validator("new_password")
@@ -367,6 +374,8 @@ class PasswordChange(BaseModel):
     def password_complexity(cls, v: str) -> str:
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
         if not re.search(r"[A-Z]", v):
             raise ValueError("Password must contain at least one uppercase letter")
         if not re.search(r"[0-9]", v):
@@ -374,6 +383,10 @@ class PasswordChange(BaseModel):
         if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
             raise ValueError("Password must contain at least one special character")
         return v
+
+
+class PasswordChange(NewPassword):
+    current_password: str
 
 
 @router.patch("/password", status_code=status.HTTP_204_NO_CONTENT)
@@ -400,42 +413,33 @@ def change_password(
 # ── Password reset ────────────────────────────────────────────────────────────
 
 class PasswordResetRequest(BaseModel):
-    email_or_username: str
+    email_or_username: str = Field(min_length=1, max_length=254)
 
 
-class PasswordResetConfirm(BaseModel):
-    token: str
-    new_password: str
-
-    @field_validator("new_password")
-    @classmethod
-    def password_complexity(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[0-9]", v):
-            raise ValueError("Password must contain at least one digit")
-        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+class PasswordResetConfirm(NewPassword):
+    token: str = Field(min_length=1, max_length=128)
 
 
 @router.post("/password-reset/request")
 def request_password_reset(
     data: PasswordResetRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Request a password reset link. Always returns 200 to avoid leaking whether an account exists."""
+    """Request a reset link and return the same response for all identifiers."""
+    settings = get_settings()
+    if settings.auth.mode != "multi" or not settings.email.configured:
+        raise HTTPException(status_code=503, detail="Email password reset is unavailable")
+
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(db, key=client_ip, action="password_reset", max_attempts=3, window_seconds=3600, lockout_minutes=60)
     record_attempt(db, key=client_ip, action="password_reset")
     db.commit()
 
-    identifier = data.email_or_username
+    identifier = data.email_or_username.strip()
     user = db.exec(
-        select(User).where((User.email == identifier) | (User.username == identifier))
+        select(User).where(User.is_active.is_(True), (User.email == identifier) | (User.username == identifier))
     ).first()
 
     if user:
@@ -447,7 +451,7 @@ def request_password_reset(
         )
         db.add(token)
         db.commit()
-        _send_password_reset_email(user, raw)
+        background_tasks.add_task(_send_password_reset_email, user.email, raw)
 
     return {"sent": True}
 
@@ -467,18 +471,29 @@ def confirm_password_reset(data: PasswordResetConfirm, db: Session = Depends(get
     if is_expired(record):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset token has expired")
 
-    user = db.get(User, record.user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found")
-
-    # Update password and bump password_changed_at so existing JWTs are invalidated
-    user.password_hash = hash_password(data.new_password)
-    user.password_changed_at = datetime.now(timezone.utc)
-    record.used_at = datetime.now(timezone.utc)
-    db.add(user)
-    db.add(record)
+    user_id = record.user_id
+    password_hash = hash_password(data.new_password)
+    now = datetime.now(timezone.utc)
+    # The conditional user update serializes resets for one account. A token
+    # issued before a credential change can never change that password again.
+    result = db.execute(
+        update(User)
+        .where(
+            User.id == user_id,
+            User.is_active.is_(True),
+            or_(User.password_changed_at.is_(None), User.password_changed_at < record.created_at),
+        )
+        .values(password_hash=password_hash, password_changed_at=now)
+    )
+    if result.rowcount != 1:
+        raise HTTPException(status_code=400, detail="This reset link is no longer valid")
+    db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user_id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    )
     # Invalidate PATs as well (credential rotation)
-    db.exec(sql_delete(ApiToken).where(ApiToken.user_id == user.id))
+    db.exec(sql_delete(ApiToken).where(ApiToken.user_id == user_id))
     db.commit()
     return None
 

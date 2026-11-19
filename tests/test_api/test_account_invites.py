@@ -25,6 +25,7 @@ def test_admin_invite_allows_one_regular_account(client, auth_headers, second_us
     assert client.get("/api/v1/auth/config").json() == {
         "registration_enabled": False,
         "invites_enabled": True,
+        "password_reset_enabled": False,
     }
     assert client.post("/api/v1/admin/invites", headers=second_user_headers).status_code == 403
     assert client.post("/api/v1/auth/register", json=_registration("uninvited")).status_code == 403

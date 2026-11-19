@@ -6,10 +6,12 @@ Regression tests for:
 """
 
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from fourdpocket.auth.tokens import generate_token, hash_token
+from fourdpocket.config import get_settings
 from fourdpocket.models.password_reset import PasswordResetToken
 
 
@@ -36,25 +38,67 @@ def _confirm_reset(client, token, new_password):
 
 # ── no-leak behaviour ─────────────────────────────────────────────────────────
 
-def test_request_reset_nonexistent_user_returns_200(client):
+@pytest.fixture
+def reset_emails(monkeypatch):
+    settings = get_settings().email
+    monkeypatch.setattr(settings, "smtp_host", "smtp.test.example.com")
+    monkeypatch.setattr(settings, "from_address", "pocket@example.com")
+    captured = []
+
+    def capture(**message):
+        captured.append(message)
+        return True
+
+    monkeypatch.setattr("fourdpocket.api.auth.send_email", capture)
+    return captured
+
+
+def test_request_reset_unavailable_without_smtp(client):
+    assert client.get("/api/v1/auth/config").json()["password_reset_enabled"] is False
+    assert _request_reset(client, "ghost@example.com").status_code == 503
+
+
+def test_request_reset_nonexistent_user_returns_200(client, reset_emails):
     """Request for unknown email must return 200 + {sent: true} (no enumeration)."""
     response = _request_reset(client, "ghost@example.com")
     assert response.status_code == 200
     assert response.json() == {"sent": True}
+    assert reset_emails == []
 
 
-def test_request_reset_known_user_returns_200(client):
+def test_request_reset_known_user_returns_200(client, reset_emails):
     _register(client)
+    assert client.get("/api/v1/auth/config").json()["password_reset_enabled"] is True
     response = _request_reset(client, "reset@example.com")
     assert response.status_code == 200
     assert response.json() == {"sent": True}
+    message = reset_emails[-1]
+    assert message["to"] == "reset@example.com"
+    link = urlsplit(message["body_text"].splitlines()[2])
+    assert link.path == "/reset-password"
+    assert not link.query
+    assert parse_qs(link.fragment).get("token")
 
 
-def test_request_reset_by_username(client):
+def test_request_reset_by_username(client, reset_emails):
     _register(client)
     response = _request_reset(client, "resetuser")
     assert response.status_code == 200
     assert response.json() == {"sent": True}
+    assert reset_emails[-1]["to"] == "reset@example.com"
+
+
+def test_password_recovery_invalidates_other_outstanding_links(client, reset_emails):
+    _register(client)
+    assert _request_reset(client, "resetuser").status_code == 200
+    first_link = urlsplit(reset_emails[-1]["body_text"].splitlines()[2])
+    assert _request_reset(client, "resetuser").status_code == 200
+    second_link = urlsplit(reset_emails[-1]["body_text"].splitlines()[2])
+    first = parse_qs(first_link.fragment)["token"][0]
+    second = parse_qs(second_link.fragment)["token"][0]
+
+    assert _confirm_reset(client, second, "NewPass456!").status_code == 204
+    assert _confirm_reset(client, first, "AnotherPass789!").status_code == 400
 
 
 # ── happy path ────────────────────────────────────────────────────────────────
@@ -94,6 +138,7 @@ def test_confirm_reset_updates_password(client, db):
     )
     assert login_new.status_code == 200
     assert "access_token" in login_new.json()
+    assert client.get("/api/v1/auth/me").status_code == 200
 
 
 def test_confirm_reset_token_is_single_use(client, db):

@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { timeAgo } from "@/lib/utils";
-import { useCurrentUser } from "@/hooks/use-auth";
+import { useAuthConfig, useCurrentUser } from "@/hooks/use-auth";
 
 interface AdminUser {
   id: string;
@@ -65,10 +65,7 @@ export default function Admin() {
     enabled: !!currentUser && currentUser.role === "admin",
   });
 
-  const { data: authConfig } = useQuery({
-    queryKey: ["auth-config"],
-    queryFn: () => api.get<{ invites_enabled: boolean }>("/api/v1/auth/config"),
-  });
+  const { data: authConfig } = useAuthConfig();
   const [copiedInvite, setCopiedInvite] = useState(false);
   const createInvite = useMutation({
     mutationFn: () => api.post<{ url: string }>("/api/v1/admin/invites"),

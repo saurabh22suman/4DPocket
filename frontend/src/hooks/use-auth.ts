@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/api/client";
+import { api, apiFetch } from "@/api/client";
 
 interface User {
   id: string;
@@ -17,6 +17,42 @@ const currentUserQuery = {
   queryKey: ["currentUser"],
   queryFn: () => api.get<User>("/api/v1/auth/me"),
 };
+
+export function useAuthConfig() {
+  return useQuery({
+    queryKey: ["auth-config"],
+    queryFn: () => api.get<{
+      registration_enabled: boolean;
+      invites_enabled: boolean;
+      password_reset_enabled: boolean;
+    }>("/api/v1/auth/config"),
+  });
+}
+
+export function useRequestPasswordReset() {
+  return useMutation({
+    mutationFn: (identifier: string) =>
+      api.post<{ sent: boolean }>("/api/v1/auth/password-reset/request", {
+        email_or_username: identifier,
+      }),
+  });
+}
+
+export function useConfirmPasswordReset() {
+  return useMutation({
+    mutationFn: async ({ token, password }: { token: string; password: string }) => {
+      const response = await apiFetch("/api/v1/auth/password-reset/confirm", {
+        method: "POST",
+        body: JSON.stringify({ token, new_password: password }),
+      });
+      if (response.status === 400) {
+        throw new Error("This reset link is invalid, expired, or already used. Request a new link.");
+      }
+      if (response.status === 422) throw new Error("Check the password requirements and try again.");
+      if (!response.ok) throw new Error("Couldn’t reset your password. Try again in a moment.");
+    },
+  });
+}
 
 export function isAuthError(error: unknown): boolean {
   return error instanceof Error && /^(401|403):/.test(error.message);
