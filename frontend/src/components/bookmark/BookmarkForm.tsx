@@ -113,43 +113,36 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
       setExtraUrls([]);
       setTitle("");
       setContent("");
-      onCreated?.(created);
-      onClose?.();
+      if (onCreated) onCreated(created);
+      else onClose?.();
     } catch {
       // Error handled by mutation state
     }
   };
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-xl p-6 max-w-lg w-full animate-fade-in">
-      <div className="flex items-center justify-between mb-5">
-        <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">Add to Pocket</h2>
-        {onClose && (
-          <button onClick={onClose} aria-label="Close" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer">
-            <X className="w-5 h-5 text-gray-400" />
-          </button>
-        )}
-      </div>
+    <div className="pocket-form">
+      {onClose && (
+        <button type="button" onClick={onClose} aria-label="Close" className="workspace-icon-button">
+          <X size={18} aria-hidden="true" />
+        </button>
+      )}
 
       <div className="flex gap-2 mb-5">
         <button
+          type="button"
           onClick={() => setMode("url")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
-            mode === "url"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
-          }`}
+          aria-pressed={mode === "url"}
+          className="workspace-button"
         >
           <Link2 className="w-4 h-4" />
           URL
         </button>
         <button
+          type="button"
           onClick={() => setMode("note")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
-            mode === "note"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
-          }`}
+          aria-pressed={mode === "note"}
+          className="workspace-button"
         >
           <FileText className="w-4 h-4" />
           Note
@@ -165,9 +158,9 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
                 type="url"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="Paste a URL..."
+                placeholder="https://example.com"
+                aria-label="Link to save"
                 className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition-all"
-                autoFocus
                 required
               />
             </div>
@@ -179,7 +172,8 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
                     type="url"
                     value={extraUrl}
                     onChange={(e) => updateExtraUrl(index, e.target.value)}
-                    placeholder="Additional URL..."
+                    placeholder="https://example.com"
+                    aria-label={`Additional link ${index + 1}`}
                     className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition-all"
                   />
                 </div>
@@ -187,7 +181,7 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
                   type="button"
                   onClick={() => removeExtraUrl(index)}
                   aria-label="Remove URL"
-                  className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+                  className="workspace-icon-button"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -196,7 +190,7 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
             <button
               type="button"
               onClick={addExtraUrl}
-              className="inline-flex items-center gap-1.5 text-sm text-sky-600 hover:text-sky-700 font-medium transition-colors cursor-pointer"
+              className="pocket-text-link"
             >
               <Plus className="w-3.5 h-3.5" />
               Add another URL
@@ -209,9 +203,9 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Note title..."
-                className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition-all"
-                autoFocus
+                placeholder="Note title"
+                aria-label="Note title"
+                className="min-w-0 flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition-all"
               />
               <button
                 type="button"
@@ -256,7 +250,7 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
         <button
           type="submit"
           disabled={createItem.isPending}
-          className="w-full py-3 bg-sky-600 text-white rounded-xl font-medium hover:bg-sky-700 active:scale-[0.98] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
+          className="workspace-button workspace-button--primary w-full"
         >
           {createItem.isPending ? (
             <>
@@ -264,7 +258,7 @@ export function BookmarkForm({ onClose, onCreated }: BookmarkFormProps) {
               Saving...
             </>
           ) : (
-            "Save to Pocket"
+            "Save item"
           )}
         </button>
 

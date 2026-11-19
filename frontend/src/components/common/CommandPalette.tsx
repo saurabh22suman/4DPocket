@@ -1,17 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Home, BookOpen, FolderOpen, Tags, FileText, Settings, Plus } from "lucide-react";
+import { Search, Home, BookOpen, FolderOpen, Tags, FileText, Settings, Plus, X } from "lucide-react";
 import { api } from "@/api/client";
 import { useFocusTrap } from "@/hooks/use-focus-trap";
+import type { Dispatch, SetStateAction } from "react";
 
 const NAV_ITEMS = [
-  { label: "Dashboard", path: "/", icon: Home },
-  { label: "Knowledge Base", path: "/knowledge", icon: BookOpen },
+  { label: "Overview", path: "/", icon: Home },
+  { label: "Library", path: "/knowledge", icon: BookOpen },
   { label: "Collections", path: "/collections", icon: FolderOpen },
   { label: "Tags", path: "/tags", icon: Tags },
   { label: "Notes", path: "/notes", icon: FileText },
   { label: "Settings", path: "/settings", icon: Settings },
-  { label: "Add Item", path: "/add", icon: Plus },
+  { label: "Save item", path: "/add", icon: Plus },
 ];
 
 interface SearchResult {
@@ -20,8 +21,7 @@ interface SearchResult {
   source_platform: string;
 }
 
-export function CommandPalette() {
-  const [open, setOpen] = useState(false);
+export function CommandPalette({ open, setOpen }: { open: boolean; setOpen: Dispatch<SetStateAction<boolean>> }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -41,7 +41,7 @@ export function CommandPalette() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [setOpen]);
 
   // Focus input when opened
   useEffect(() => {
@@ -49,31 +49,30 @@ export function CommandPalette() {
       setQuery("");
       setResults([]);
       setActiveIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      inputRef.current?.focus();
     }
   }, [open]);
 
   // Search as user types (debounced)
   useEffect(() => {
-    if (!query.trim()) {
+    if (!open || query.trim().length < 2) {
       setResults([]);
       return;
     }
+    let active = true;
     const timer = setTimeout(async () => {
       try {
-        const data = await api.get<SearchResult[]>(`/api/v1/search/unified?q=${encodeURIComponent(query)}&limit=5`);
-        if (!Array.isArray(data)) {
-          console.error("[CommandPalette] expected array from /api/v1/search, got:", data);
-          setResults([]);
-          return;
-        }
-        setResults(data);
+        const data = await api.get<{ items: SearchResult[] }>(`/api/v1/search/unified?q=${encodeURIComponent(query)}&limit=5`);
+        if (active) setResults(data.items ?? []);
       } catch {
-        setResults([]);
+        if (active) setResults([]);
       }
     }, 200);
-    return () => clearTimeout(timer);
-  }, [query]);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [open, query]);
 
   const filteredNav = query
     ? NAV_ITEMS.filter((item) => item.label.toLowerCase().includes(query.toLowerCase()))
@@ -89,7 +88,7 @@ export function CommandPalette() {
       navigate(path);
       setOpen(false);
     },
-    [navigate]
+    [navigate, setOpen]
   );
 
   const handleKeyDown = useCallback(
@@ -120,7 +119,7 @@ export function CommandPalette() {
         role="dialog"
         aria-labelledby="command-palette-title"
         aria-modal="true"
-        className="relative w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden"
+        className="workspace-command relative w-full max-w-lg overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <span id="command-palette-title" className="sr-only">Command palette</span>
@@ -139,9 +138,9 @@ export function CommandPalette() {
             aria-label="Search commands and items"
             className="flex-1 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 outline-none text-sm"
           />
-          <kbd className="hidden sm:inline-flex text-[10px] text-gray-400 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">
-            ESC
-          </kbd>
+          <button type="button" onClick={() => setOpen(false)} aria-label="Close search" className="workspace-icon-button">
+            <X size={17} aria-hidden="true" />
+          </button>
         </div>
 
         {/* Results list */}

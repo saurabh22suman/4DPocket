@@ -1,16 +1,9 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  BookOpen,
-  Grid3x3,
-  List,
-  Globe,
-  Loader2,
-  CheckSquare,
-  RefreshCw,
-  ArrowUpDown,
+  ArrowUpDown, BookOpen, Check, CheckSquare, Grid3x3, List, Loader2, RefreshCw,
 } from "lucide-react";
-import { PlatformIcon } from "@/components/common/PlatformIcon";
+import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { useItems } from "@/hooks/use-items";
@@ -18,51 +11,41 @@ import { useNotes } from "@/hooks/use-notes";
 import { useUIStore } from "@/stores/ui-store";
 import { BookmarkCard } from "@/components/bookmark/BookmarkCard";
 import NoteCard from "@/components/bookmark/NoteCard";
-
-const PLATFORMS: { key: string; label: string; icon: React.ReactNode }[] = [
-  { key: "All", label: "All", icon: <Globe className="h-4 w-4" /> },
-  { key: "YouTube", label: "YouTube", icon: <PlatformIcon platform="youtube" className="h-4 w-4" /> },
-  { key: "Reddit", label: "Reddit", icon: <PlatformIcon platform="reddit" className="h-4 w-4" /> },
-  { key: "GitHub", label: "GitHub", icon: <PlatformIcon platform="github" className="h-4 w-4" /> },
-  { key: "Twitter", label: "Twitter", icon: <PlatformIcon platform="twitter" className="h-4 w-4" /> },
-  { key: "HackerNews", label: "HackerNews", icon: <PlatformIcon platform="hackernews" className="h-4 w-4" /> },
-  { key: "Medium", label: "Medium", icon: <PlatformIcon platform="medium" className="h-4 w-4" /> },
-  { key: "Substack", label: "Substack", icon: <PlatformIcon platform="substack" className="h-4 w-4" /> },
-];
+import { platformLabel, platformLabels } from "@/lib/platforms";
 
 export default function KnowledgeBase() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const isFavorite = searchParams.get("is_favorite") === "true" ? true : undefined;
   const isArchived = searchParams.get("is_archived") === "true" ? true : undefined;
   const tagId = searchParams.get("tag_id") || undefined;
-  const [platform, setPlatform] = useState("All");
+  const requestedSource = searchParams.get("source");
+  const platform = requestedSource && Object.hasOwn(platformLabels, requestedSource) ? requestedSource : "";
+  function setPlatform(source: string) {
+    const next = new URLSearchParams(searchParams);
+    if (source) next.set("source", source);
+    else next.delete("source");
+    setSearchParams(next, { replace: true });
+  }
   const [sortKey, setSortKey] = useState("created_at:desc");
-  const { viewMode, setViewMode } = useUIStore();
+  const viewMode = useUIStore((state) => state.viewMode);
+  const setViewMode = useUIStore((state) => state.setViewMode);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [showBulkTagInput, setShowBulkTagInput] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const qc = useQueryClient();
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await qc.invalidateQueries({ queryKey: ["items"] });
-    setTimeout(() => setRefreshing(false), 500);
-  };
-
   const [sortBy, sortOrder] = sortKey.split(":");
-  const filters: Record<string, unknown> = { sort_by: sortBy, sort_order: sortOrder };
-  if (platform !== "All") filters.source_platform = platform.toLowerCase();
-  if (isFavorite) filters.is_favorite = true;
-  if (isArchived) filters.is_archived = true;
-  if (tagId) filters.tag_id = tagId;
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
-    useItems(filters);
+  const { data, isLoading, isError, refetch, fetchNextPage, hasNextPage, isFetchingNextPage, isRefetching } =
+    useItems({ sort_by: sortBy, sort_order: sortOrder, source_platform: platform || undefined, is_favorite: isFavorite, is_archived: isArchived, tag_id: tagId });
 
   const items = data?.pages.flat() ?? [];
-  const { data: notes } = useNotes({ is_archived: isArchived, is_favorite: isFavorite });
+  const notes = useNotes({ is_archived: isArchived, is_favorite: isFavorite });
+  const includeNotes = !platform && !tagId && !selecting;
+  const visibleNotes = includeNotes ? notes.data ?? [] : [];
+  const libraryTitle = isFavorite ? "Favorites" : isArchived ? "Archive" : tagId ? "Tagged items" : "Library";
+
 
   const bulkAction = useMutation({
     mutationFn: (data: { action: string; item_ids: string[]; tag_name?: string }) =>
@@ -100,183 +83,115 @@ export default function KnowledgeBase() {
   };
 
   return (
-    <div className="animate-fade-in max-w-7xl mx-auto space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            {isFavorite ? "Favorites" : isArchived ? "Archive" : tagId ? "Tagged Items" : "Knowledge Base"}
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            {isFavorite ? "Your starred items" : isArchived ? "Archived items" : tagId ? "Filtered by tag" : "All your saved knowledge in one place"}
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="relative inline-flex items-center">
-            <ArrowUpDown className="absolute left-2 h-3.5 w-3.5 text-gray-500 pointer-events-none" />
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value)}
-              className="pl-7 pr-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-none outline-none cursor-pointer hover:shadow-md transition-all duration-200 appearance-none"
-              aria-label="Sort order"
-            >
+    <div className="pocket-library">
+      <div className="pocket-page-title">
+        <h1 className="pocket-heading">{libraryTitle}</h1>
+      </div>
+
+      <div className="pocket-library__toolbar">
+        <div className="pocket-library__filters">
+          <label className="pocket-library__select">
+            <span className="sr-only">Source</span>
+            <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
+              <option value="">All sources</option>
+              {Object.entries(platformLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </label>
+          <label className="pocket-library__select">
+            <ArrowUpDown size={15} aria-hidden="true" />
+            <span className="sr-only">Sort order</span>
+            <select value={sortKey} onChange={(event) => setSortKey(event.target.value)}>
               <option value="created_at:desc">Newest first</option>
               <option value="created_at:asc">Oldest first</option>
-              <option value="title:asc">Title A-Z</option>
-              <option value="title:desc">Title Z-A</option>
+              <option value="title:asc">Title A–Z</option>
+              <option value="title:desc">Title Z–A</option>
               <option value="updated_at:desc">Recently updated</option>
             </select>
-          </div>
-          <button
-            onClick={handleRefresh}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-all cursor-pointer"
-            title="Refresh"
-            aria-label="Refresh"
-          >
-            <RefreshCw className={`h-4 w-4 text-gray-500 ${refreshing ? "animate-spin" : ""}`} />
+          </label>
+        </div>
+        <div className="pocket-library__actions">
+          <button type="button" className="workspace-icon-button" onClick={() => void Promise.all([refetch(), notes.refetch()])} disabled={isRefetching} aria-label="Refresh" title="Refresh">
+            <RefreshCw size={17} className={isRefetching ? "motion-safe:animate-spin" : ""} aria-hidden="true" />
           </button>
           <button
+            type="button"
+            className="workspace-button pocket-library__select-items"
+            aria-pressed={selecting}
             onClick={() => {
-              setSelecting((v) => !v);
+              setSelecting((value) => !value);
               setSelected(new Set());
+              setShowBulkTagInput(false);
+              setConfirmDelete(false);
             }}
-            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
-              selecting
-                ? "bg-sky-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-md"
-            }`}
-            aria-label="Toggle selection mode"
           >
-            <CheckSquare className="h-4 w-4" />
-            <span className="hidden sm:inline">Select</span>
+            <CheckSquare size={16} aria-hidden="true" /> Select
           </button>
-          <button
-            onClick={() => setViewMode("grid")}
-            className={`p-2.5 rounded-lg text-sm transition-all duration-200 cursor-pointer ${
-              viewMode === "grid"
-                ? "bg-sky-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-md"
-            }`}
-            aria-label="Grid view"
-          >
-            <Grid3x3 className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setViewMode("list")}
-            className={`p-2.5 rounded-lg text-sm transition-all duration-200 cursor-pointer ${
-              viewMode === "list"
-                ? "bg-sky-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-md"
-            }`}
-            aria-label="List view"
-          >
-            <List className="h-4 w-4" />
-          </button>
+          <div className="pocket-view-switch" role="group" aria-label="Library view">
+            <button type="button" onClick={() => setViewMode("list")} className="workspace-icon-button" aria-label="List view" aria-pressed={viewMode === "list"} title="List view">
+              <List size={17} aria-hidden="true" />
+            </button>
+            <button type="button" onClick={() => setViewMode("grid")} className="workspace-icon-button" aria-label="Grid view" aria-pressed={viewMode === "grid"} title="Grid view">
+              <Grid3x3 size={16} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {refreshing && (
-        <div className="flex items-center justify-center py-3">
-          <Loader2 className="w-5 h-5 animate-spin text-sky-600" />
-          <span className="text-sm text-gray-400 ml-2">Refreshing...</span>
+      {isLoading || (!items.length && includeNotes && notes.isLoading) ? (
+        <div className="pocket-list" role="status" aria-label="Loading library">
+          {Array.from({ length: 5 }, (_, index) => <div key={index} className="pocket-skeleton-row" aria-hidden="true"><span /><i /></div>)}
         </div>
-      )}
-
-      <div className="flex gap-2 flex-wrap mb-6">
-        {PLATFORMS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => setPlatform(p.key)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 cursor-pointer ${
-              platform === p.key
-                ? "bg-sky-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-md"
-            }`}
-          >
-            {p.icon}
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
-              <div className="aspect-video animate-pulse bg-gray-100 dark:bg-gray-800" />
-              <div className="p-4 space-y-2">
-                <div className="h-3 w-20 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-                <div className="h-4 w-full animate-pulse bg-gray-200 dark:bg-gray-700 rounded" />
-                <div className="h-3 w-3/4 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-              </div>
-            </div>
-          ))}
+      ) : (isError && !data) || (!items.length && includeNotes && notes.isError && !notes.data) ? (
+        <div role="alert" className="pocket-empty">
+          <p>Couldn’t load the library.</p>
+          <button type="button" className="workspace-button" onClick={() => void Promise.all([refetch(), notes.refetch()])}>Try again</button>
         </div>
-      ) : items.length === 0 ? (
-        <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <BookOpen className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-          <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">
-            No items found
-          </p>
-          <p className="text-gray-400 dark:text-gray-500 text-sm">
-            {platform !== "All" ? `No ${platform} items found. Try a different platform filter.` : "Try a different filter or add some content."}
-          </p>
+      ) : !items.length && !visibleNotes.length ? (
+        <div className="pocket-empty">
+          <BookOpen size={24} aria-hidden="true" />
+          <h2>No items found</h2>
+          {platform ? (
+            <>
+              <p>No saves from {platformLabel(platform)} in this view.</p>
+              <button className="workspace-button" type="button" onClick={() => setPlatform("")}>Show all sources</button>
+            </>
+          ) : !isFavorite && !isArchived && !tagId ? (
+            <Link to="/add" className="pocket-text-link">Save your first item</Link>
+          ) : (
+            <Link to="/knowledge" className="pocket-text-link">Open library</Link>
+          )}
         </div>
       ) : (
         <>
-          <div
-            className={
-              viewMode === "grid"
-                ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
-                : "flex flex-col gap-3"
-            }
-          >
-            {items.map((item) => (
-              selecting ? (
-                <div
-                  key={item.id}
-                  className="relative cursor-pointer"
-                  onClick={() => toggleSelectItem(item.id)}
-                >
-                  <div className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-150 ${
-                    selected.has(item.id)
-                      ? "bg-sky-600 border-sky-600"
-                      : "bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-600"
-                  }`}>
-                    {selected.has(item.id) && (
-                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 12 12">
-                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </div>
-                  <div className={`pointer-events-none transition-all duration-150 ${selected.has(item.id) ? "ring-2 ring-sky-500 rounded-xl" : ""}`}>
+          <div className={`pocket-library__items pocket-library__items--${viewMode}`}>
+            {items.map((item) => {
+              if (!selecting) return <BookmarkCard key={item.id} item={item} variant={viewMode} />;
+              const checked = selected.has(item.id);
+              return (
+                <div key={item.id} className="pocket-selectable" data-selected={checked}>
+                  <div inert>
                     <BookmarkCard item={item} variant={viewMode} />
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleSelectItem(item.id)}
+                    className="pocket-selectable__button"
+                    aria-label={`Select ${item.title || item.url || "untitled item"}`}
+                    aria-pressed={checked}
+                  >
+                    <span>{checked && <Check size={14} aria-hidden="true" />}</span>
+                  </button>
                 </div>
-              ) : (
-                <BookmarkCard key={item.id} item={item} variant={viewMode} />
-              )
-            ))}
-            {/* Notes in knowledge base */}
-            {platform === "All" && notes && notes.length > 0 && !selecting && notes.map((note) => (
-              <NoteCard key={`note-${note.id}`} note={note} variant={viewMode === "list" ? "compact" : "grid"} />
-            ))}
+              );
+            })}
+            {visibleNotes.map((note) => <NoteCard key={`note-${note.id}`} note={note} variant={viewMode === "list" ? "compact" : "grid"} />)}
           </div>
 
           {hasNextPage && (
-            <div className="mt-8 text-center">
-              <button
-                onClick={() => fetchNextPage()}
-                disabled={isFetchingNextPage}
-                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-md transition-all duration-200 cursor-pointer disabled:opacity-50"
-              >
-                {isFetchingNextPage ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading...
-                  </>
-                ) : (
-                  "Load more"
-                )}
+            <div className="pocket-library__more">
+              <button type="button" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage} className="workspace-button">
+                {isFetchingNextPage && <Loader2 size={16} className="motion-safe:animate-spin" aria-hidden="true" />}
+                {isFetchingNextPage ? "Loading…" : "Load more"}
               </button>
             </div>
           )}
@@ -284,7 +199,7 @@ export default function KnowledgeBase() {
       )}
 
       {selecting && selected.size > 0 && (
-        <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl shadow-xl px-4 py-3 flex flex-wrap items-center gap-3">
+        <div className="pocket-bulk-actions">
           <span className="text-sm font-medium text-gray-600 dark:text-gray-300">{selected.size} selected</span>
           {showBulkTagInput ? (
             <>
@@ -293,7 +208,8 @@ export default function KnowledgeBase() {
                 value={bulkTagInput}
                 onChange={(e) => setBulkTagInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleBulkTag()}
-                placeholder="Tag name..."
+                placeholder="Tag name"
+                aria-label="Tag name"
                 autoFocus
                 className="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
               />

@@ -14,13 +14,13 @@ interface Props {
   itemId: string;
   itemType?: string;
   sourcePlatform: string;
-  url?: string | null;
   faviconUrl?: string | null;
   media?: MediaItem[];
   metadata?: Record<string, unknown>;
   // Visual shape
   shape: "aspect-video" | "square-16" | "square-24";
   iconSize: string;
+  hideFallback?: boolean;
 }
 
 // Resolve the best thumbnail URL we have, with a proxy fallback for
@@ -76,24 +76,16 @@ function shapeClass(shape: Props["shape"]): string {
   }
 }
 
-// Fallback tile — platform icon on a soft gradient. Used when no
-// thumbnail is available OR the image failed to load.
 function FallbackTile({
   sourcePlatform,
-  url,
   faviconUrl,
   iconSize,
   shape,
-}: Pick<Props, "sourcePlatform" | "url" | "faviconUrl" | "iconSize" | "shape">) {
-  const bg =
-    shape === "aspect-video"
-      ? "bg-gradient-to-br from-sky-50 to-sky-100 dark:from-sky-950 dark:to-gray-900"
-      : "bg-sky-50 dark:bg-sky-950";
+}: Pick<Props, "sourcePlatform" | "faviconUrl" | "iconSize" | "shape">) {
   return (
-    <div className={`${shapeClass(shape)} ${bg} flex items-center justify-center overflow-hidden`}>
+    <div className={`${shapeClass(shape)} bookmark-thumbnail-fallback flex items-center justify-center overflow-hidden`}>
       <PlatformIcon
         platform={sourcePlatform}
-        url={url ?? undefined}
         faviconUrl={faviconUrl ?? undefined}
         className={iconSize}
       />
@@ -105,12 +97,12 @@ export function BookmarkThumbnail({
   itemId,
   itemType,
   sourcePlatform,
-  url,
   faviconUrl,
   media,
   metadata,
   shape,
   iconSize,
+  hideFallback,
 }: Props) {
   const [loadError, setLoadError] = useState(false);
   const thumbnail = resolveThumbnail(itemId, media);
@@ -118,10 +110,10 @@ export function BookmarkThumbnail({
   const duration = formatDuration(metadata?.duration);
 
   if (!thumbnail || loadError) {
+    if (hideFallback) return null;
     return (
       <FallbackTile
         sourcePlatform={sourcePlatform}
-        url={url}
         faviconUrl={faviconUrl}
         iconSize={iconSize}
         shape={shape}

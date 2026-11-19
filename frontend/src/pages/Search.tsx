@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search as SearchIcon, Loader2, Sparkles, AlignLeft, StickyNote, Zap, Tag, Star, Archive } from "lucide-react";
+import { Search as SearchIcon, Loader2, SlidersHorizontal, StickyNote } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import DOMPurify from "dompurify";
 import { api } from "@/api/client";
 import { BookmarkCard } from "@/components/bookmark/BookmarkCard";
 import NoteCard from "@/components/bookmark/NoteCard";
 import type { Note } from "@/hooks/use-notes";
+import { platformLabel } from "@/lib/platforms";
 
 interface Item {
   id: string;
@@ -40,26 +41,6 @@ interface UnifiedResult {
   total: number;
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  generic: "Web",
-  youtube: "YouTube",
-  github: "GitHub",
-  reddit: "Reddit",
-  twitter: "Twitter",
-  hackernews: "Hacker News",
-  stackoverflow: "Stack Overflow",
-  wikipedia: "Wikipedia",
-  arxiv: "arXiv",
-  medium: "Medium",
-  substack: "Substack",
-  mastodon: "Mastodon",
-  bluesky: "Bluesky",
-  instagram: "Instagram",
-  tiktok: "TikTok",
-  spotify: "Spotify",
-  goodreads: "Goodreads",
-};
-
 const TYPE_LABELS: Record<string, string> = {
   url: "Link",
   note: "Note",
@@ -77,7 +58,7 @@ type SearchMode = "fulltext" | "semantic" | "hybrid";
 function formatPlatformLabel(raw: string | undefined | null): string {
   if (!raw) return "";
   const cleaned = raw.replace(/^SourcePlatform\./, "");
-  return PLATFORM_LABELS[cleaned] ?? cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  return platformLabel(cleaned);
 }
 
 function formatTypeLabel(raw: string | undefined | null): string {
@@ -120,7 +101,7 @@ export default function Search() {
     ? `/api/v1/search/unified?q=${encodeURIComponent(query)}${filterStr}`
     : null;
 
-  const { data: unifiedResults, isLoading: unifiedLoading, isFetching: unifiedFetching } =
+  const { data: unifiedResults, isLoading: unifiedLoading, isFetching: unifiedFetching, isError: unifiedError, refetch: retryUnified } =
     useQuery<UnifiedResult>({
       queryKey: ["search-unified", unifiedUrl],
       queryFn: () => api.get(unifiedUrl!),
@@ -132,7 +113,7 @@ export default function Search() {
     ? `/api/v1/search/semantic?q=${encodeURIComponent(query)}${filterStr}`
     : null;
 
-  const { data: semanticResults, isLoading: semanticLoading, isFetching: semanticFetching } =
+  const { data: semanticResults, isLoading: semanticLoading, isFetching: semanticFetching, isError: semanticError, refetch: retrySemantic } =
     useQuery<Item[]>({
       queryKey: ["search-semantic", semanticUrl],
       queryFn: () => api.get(semanticUrl!),
@@ -144,7 +125,7 @@ export default function Search() {
     ? `/api/v1/search/hybrid?q=${encodeURIComponent(query)}${filterStr}`
     : null;
 
-  const { data: hybridResults, isLoading: hybridLoading, isFetching: hybridFetching } =
+  const { data: hybridResults, isLoading: hybridLoading, isFetching: hybridFetching, isError: hybridError, refetch: retryHybrid } =
     useQuery<Item[]>({
       queryKey: ["search-hybrid", hybridUrl],
       queryFn: () => api.get(hybridUrl!),
@@ -160,6 +141,8 @@ export default function Search() {
   const notes = mode === "fulltext" ? (unifiedResults?.notes ?? []) : [];
   const isLoading = mode === "fulltext" ? unifiedLoading : mode === "semantic" ? semanticLoading : hybridLoading;
   const isFetching = mode === "fulltext" ? unifiedFetching : mode === "semantic" ? semanticFetching : hybridFetching;
+  const isError = mode === "fulltext" ? unifiedError : mode === "semantic" ? semanticError : hybridError;
+  const retrySearch = mode === "fulltext" ? retryUnified : mode === "semantic" ? retrySemantic : retryHybrid;
   const totalResults = items.length + notes.length;
   const showSkeleton = (isLoading || isFetching) && query.length >= 2;
 
@@ -167,181 +150,112 @@ export default function Search() {
     const timer = setTimeout(() => {
       setQuery(input);
       if (input) {
-        setSearchParams({ q: input });
+        setSearchParams({ q: input }, { replace: true });
       } else {
-        setSearchParams({});
+        setSearchParams({}, { replace: true });
       }
     }, 350);
     return () => clearTimeout(timer);
   }, [input, setSearchParams]);
 
-  const modes: { key: SearchMode; label: string; icon: typeof AlignLeft; desc: string }[] = [
-    { key: "fulltext", label: "Full-text", icon: AlignLeft, desc: "Keyword search with fuzzy fallback" },
-    { key: "hybrid", label: "Hybrid", icon: Zap, desc: "Keyword + AI semantic combined" },
-    { key: "semantic", label: "Semantic", icon: Sparkles, desc: "AI meaning-based search" },
+  const modes: { key: SearchMode; label: string; hint: string }[] = [
+    { key: "fulltext", label: "Full-text", hint: "Search for matching words" },
+    { key: "hybrid", label: "Hybrid", hint: "Search by words and meaning" },
+    { key: "semantic", label: "Semantic", hint: "Search by meaning" },
   ];
+  const activeFilters = Number(!!selectedPlatform) + Number(!!selectedType)
+    + (mode === "fulltext" ? Number(!!selectedTag) + Number(showFavorites) + Number(showArchived) : 0);
 
   return (
-    <div className="animate-fade-in p-6 max-w-5xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <SearchIcon className="h-6 w-6 text-sky-600" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          Search
-        </h1>
-      </div>
+    <div className="pocket-search">
+      <h1 className="pocket-heading">Search</h1>
 
-      <div className="relative mb-4">
-        <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+      <div className="pocket-search__input">
+        <SearchIcon size={19} aria-hidden="true" />
         <input
           type="search"
           aria-label="Search your knowledge base"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Search your knowledge base... (try tag:ml is:favorite after:2024-01)"
-          autoFocus
-          className="w-full pl-12 pr-12 py-3.5 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-600 transition-all duration-200 shadow-sm"
+          onChange={(event) => setInput(event.target.value)}
+          placeholder="Try a title, keyword, or URL"
         />
-        {showSkeleton && (
-          <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 animate-spin" />
-        )}
+        {showSkeleton && <Loader2 size={17} className="motion-safe:animate-spin" aria-hidden="true" />}
       </div>
 
-      {/* Search mode toggle */}
-      <div className="flex items-center gap-2 mb-4">
-        {modes.map(({ key, label, icon: Icon, desc }) => (
-          <button
-            key={key}
-            onClick={() => setMode(key)}
-            title={desc}
-            aria-pressed={mode === key}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 cursor-pointer ${
-              mode === key
-                ? "bg-sky-600 text-white"
-                : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-sm"
-            }`}
-          >
-            <Icon className="h-3.5 w-3.5" />
+      <div className="pocket-search__controls" role="group" aria-label="Search mode">
+        {modes.map(({ key, label, hint }) => (
+          <button type="button" key={key} onClick={() => setMode(key)} title={hint}
+            aria-pressed={mode === key} className="workspace-button">
             {label}
           </button>
         ))}
       </div>
 
-      {/* Quick filter toggles */}
-      {mode === "fulltext" && <div className="flex flex-wrap items-center gap-2 mb-3">
-        <button
-          onClick={() => setShowFavorites(!showFavorites)}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all cursor-pointer ${
-            showFavorites
-              ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 ring-1 ring-amber-300 dark:ring-amber-700"
-              : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
-          }`}
-        >
-          <Star className="h-3 w-3" />
-          Favorites
-        </button>
-        <button
-          onClick={() => setShowArchived(!showArchived)}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all cursor-pointer ${
-            showArchived
-              ? "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 ring-1 ring-slate-400"
-              : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
-          }`}
-        >
-          <Archive className="h-3 w-3" />
-          Archived
-        </button>
-      </div>}
-
-      {/* Platform + Type + Tag filter chips */}
-      {mode !== "semantic" && (filters?.platforms?.length || filters?.types?.length || filters?.tags?.length) ? (
-        <div className="flex flex-wrap gap-2 mb-6">
-          {filters?.platforms?.map((p) => (
-            <button
-              key={p.name}
-              onClick={() => setSelectedPlatform(selectedPlatform === p.name ? null : p.name)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 cursor-pointer ${
-                selectedPlatform === p.name
-                  ? "bg-sky-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-sm"
-              }`}
-            >
-              {formatPlatformLabel(p.name)} ({p.count})
-            </button>
-          ))}
-          {filters?.types?.map((type) => (
-            <button
-              key={type}
-              onClick={() => setSelectedType(selectedType === type ? null : type)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 cursor-pointer ${
-                selectedType === type
-                  ? "bg-violet-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-sm"
-              }`}
-            >
-              {formatTypeLabel(type)}
-            </button>
-          ))}
-          {mode === "fulltext" && filters?.tags?.slice(0, 15).map((t) => (
-            <button
-              key={t.slug}
-              onClick={() => setSelectedTag(selectedTag === t.slug ? null : t.slug)}
-              className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 cursor-pointer ${
-                selectedTag === t.slug
-                  ? "bg-emerald-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:shadow-sm"
-              }`}
-            >
-              <Tag className="h-3 w-3" />
-              {t.name} ({t.count})
-            </button>
-          ))}
-        </div>
+      {mode !== "semantic" && (mode === "fulltext" || filters?.platforms?.length || filters?.types?.length) ? (
+        <details className="pocket-search__filter-section">
+          <summary><SlidersHorizontal size={16} aria-hidden="true" /> Filters{activeFilters > 0 && ` (${activeFilters})`}</summary>
+          <div className="pocket-search__filters">
+            {!!filters?.platforms?.length && (
+              <label className="pocket-library__select">
+                <span className="sr-only">Source</span>
+                <select value={selectedPlatform ?? ""} onChange={(event) => setSelectedPlatform(event.target.value || null)}>
+                  <option value="">All sources</option>
+                  {filters.platforms.map((platform) => (
+                    <option key={platform.name} value={platform.name}>{formatPlatformLabel(platform.name)} ({platform.count})</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {!!filters?.types?.length && (
+              <label className="pocket-library__select">
+                <span className="sr-only">Content type</span>
+                <select value={selectedType ?? ""} onChange={(event) => setSelectedType(event.target.value || null)}>
+                  <option value="">All types</option>
+                  {filters.types.map((type) => <option key={type} value={type}>{formatTypeLabel(type)}</option>)}
+                </select>
+              </label>
+            )}
+            {mode === "fulltext" && !!filters?.tags?.length && (
+              <label className="pocket-library__select">
+                <span className="sr-only">Tag</span>
+                <select value={selectedTag ?? ""} onChange={(event) => setSelectedTag(event.target.value || null)}>
+                  <option value="">All tags</option>
+                  {filters.tags.map((tag) => <option key={tag.slug} value={tag.slug}>{tag.name} ({tag.count})</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+          {mode === "fulltext" && (
+            <div className="pocket-search__toggles">
+              <label><input type="checkbox" checked={showFavorites} onChange={(event) => setShowFavorites(event.target.checked)} /> Favorites only</label>
+              <label><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Archived only</label>
+            </div>
+          )}
+        </details>
       ) : null}
 
       {!query || query.length < 2 ? (
-        <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <SearchIcon className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-          <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">
-            Search your knowledge base
-          </p>
-          <p className="text-sm text-gray-400 dark:text-gray-500 max-w-md mx-auto">
-            Type at least 2 characters. Try URLs, keywords, or filters like{" "}
-            <code className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">tag:ml</code>{" "}
-            <code className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">is:favorite</code>{" "}
-            <code className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">after:2024-01</code>
-          </p>
-        </div>
+        query.length === 1 ? <p className="pocket-search__hint">Enter at least 2 characters.</p>
+          : mode === "fulltext" && <p className="pocket-search__hint">Use <code>is:favorite</code> or <code>tag:name</code> to narrow your search.</p>
       ) : showSkeleton && totalResults === 0 ? (
-        <div className="flex flex-col gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="flex items-center gap-4 p-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-              <div className="w-16 h-16 rounded-xl animate-pulse bg-gray-100 dark:bg-gray-800 flex-shrink-0" />
-              <div className="flex-1 space-y-2">
-                <div className="h-3 w-24 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-                <div className="h-4 w-3/4 animate-pulse bg-gray-200 dark:bg-gray-700 rounded" />
-                <div className="h-3 w-1/2 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-              </div>
-            </div>
-          ))}
+        <div className="pocket-list" role="status" aria-label="Searching">
+          {Array.from({ length: 4 }, (_, index) => <div key={index} className="pocket-skeleton-row" aria-hidden="true"><span /><i /></div>)}
         </div>
-      ) : totalResults === 0 && !isLoading ? (
-        <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <SearchIcon className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-          <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">
-            No results for &ldquo;{query}&rdquo;
-          </p>
-          <p className="text-sm text-gray-400 dark:text-gray-500">
-            {mode === "fulltext"
-              ? "Try different keywords, a URL, or switch to Hybrid/Semantic search"
-              : "Try different keywords or switch to Full-text search"}
-          </p>
+      ) : isError && totalResults === 0 ? (
+        <div className="pocket-empty" role="alert">
+          <p>Couldn’t complete the search.</p>
+          <button type="button" onClick={() => void retrySearch()} className="workspace-button">Try again</button>
+        </div>
+      ) : totalResults === 0 ? (
+        <div className="pocket-empty">
+          <h2>No results for “{query}”</h2>
+          <p>Try different words{activeFilters > 0 ? " or change the filters" : ""}.</p>
         </div>
       ) : (
         <div>
           {totalResults > 0 && (
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            <p className="pocket-search__hint mb-4 [overflow-wrap:anywhere]" aria-live="polite">
               {totalResults} result{totalResults !== 1 ? "s" : ""} for &ldquo;{query}&rdquo;
-              {mode === "hybrid" && <span className="ml-1 text-xs text-sky-500">(keyword + semantic fusion)</span>}
             </p>
           )}
 
@@ -364,7 +278,7 @@ export default function Search() {
 
           {/* Item results */}
           {items.length > 0 && (
-            <div className="flex flex-col gap-3">
+            <div className="pocket-search__results">
               {items.map((item) => (
                 <div key={item.id}>
                   <BookmarkCard item={item} variant="list" />

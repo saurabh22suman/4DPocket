@@ -38,10 +38,11 @@ export interface QueueStats {
   pending_items: number;
 }
 
-export function useQueueStats() {
+export function useQueueStats(enabled = true) {
   return useQuery<QueueStats>({
     queryKey: ["queue-stats"],
     queryFn: () => api.get("/api/v1/items/queue-stats"),
+    enabled,
     // Poll every 10s while any UI is mounted — cheap query, single row count.
     refetchInterval: 10_000,
     staleTime: 5_000,
@@ -92,7 +93,10 @@ export function useCreateItem() {
   return useMutation({
     mutationFn: (data: { url?: string; title?: string; content?: string }) =>
       api.post<Item>("/api/v1/items", data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["items"] }),
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: ["items"] }),
+      qc.invalidateQueries({ queryKey: ["stats"] }),
+    ]),
   });
 }
 

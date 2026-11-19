@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
-import { Star, Clock, GitFork, MessageSquare, Eye, ArrowUp, Hash } from "lucide-react";
+import { Star, GitFork, MessageSquare, Eye, ArrowRight, ArrowUp, Hash } from "lucide-react";
 import { timeAgo } from "@/lib/utils";
+import { platformLabel } from "@/lib/platforms";
 import { useUpdateItem, useQueueStats, type EnrichmentStatus } from "@/hooks/use-items";
 import { PlatformIcon } from "@/components/common/PlatformIcon";
 import { EnrichmentBadge } from "@/components/bookmark/EnrichmentBadge";
@@ -121,129 +122,69 @@ function PlatformMeta({ platform, metadata }: { platform: string; metadata?: Rec
 
 export function BookmarkCard({ item, variant = "grid" }: BookmarkCardProps) {
   const updateItem = useUpdateItem();
-  // Queue stats only fetched once per app session (TanStack Query dedups)
-  // and only used to contextualize "queued" items; skip if status is done.
   const enrichmentProcessing =
     item.enrichment_status?.overall === "processing" ||
     item.enrichment_status?.overall === "pending";
-  const queueStats = useQueueStats();
+  const queueStats = useQueueStats(enrichmentProcessing);
   const itemsAhead = enrichmentProcessing ? queueStats.data?.items_in_flight : undefined;
-
-  const toggleFavorite = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    updateItem.mutate({ id: item.id, is_favorite: !item.is_favorite });
-  };
+  const destination = `/item/${item.id}`;
+  const title = item.title || item.url || "Untitled";
+  const source = platformLabel(item.source_platform);
+  const date = timeAgo(item.created_at);
 
   if (variant === "compact") {
     return (
-      <Link
-        to={`/item/${item.id}`}
-        className="flex items-center gap-3 py-2.5 px-3 rounded-xl hover:bg-sky-50/50 dark:hover:bg-gray-800/50 transition-all duration-200 cursor-pointer group"
-      >
-        <PlatformIcon platform={item.source_platform} url={item.url} faviconUrl={item.favicon_url} className="w-4 h-4" />
-        <span className="text-sm truncate flex-1 text-gray-700 dark:text-gray-300">
-          {item.title || item.url || "Untitled"}
+      <Link to={destination} className="pocket-recent-item">
+        <span className="pocket-recent-item__icon">
+          <PlatformIcon platform={item.source_platform} className="size-5" />
         </span>
-        <EnrichmentBadge status={item.enrichment_status} itemsAhead={itemsAhead} />
-        <span className="text-xs text-gray-400 flex items-center gap-1">
-          <Clock className="w-3 h-3" />
-          {timeAgo(item.created_at)}
-        </span>
+        <div className="pocket-recent-item__text">
+          <span className="pocket-recent-item__title">{title}</span>
+          <span className="pocket-recent-item__meta">{source}<span aria-hidden="true"> · </span>{date}</span>
+        </div>
+        <ArrowRight size={17} className="pocket-recent-item__arrow" aria-hidden="true" />
       </Link>
     );
   }
 
-  if (variant === "list") {
-    return (
-      <Link
-        to={`/item/${item.id}`}
-        className="flex items-center gap-4 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-800 bg-white dark:bg-gray-900 hover:border-sky-200 dark:hover:border-sky-800 transition-colors duration-200 cursor-pointer group"
-      >
-        <BookmarkThumbnail
-          itemId={item.id}
-          itemType={item.item_type}
-          sourcePlatform={item.source_platform}
-          url={item.url}
-          faviconUrl={item.favicon_url}
-          media={item.media}
-          metadata={item.item_metadata}
-          shape="square-16"
-          iconSize="w-6 h-6"
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <PlatformIcon platform={item.source_platform} url={item.url} faviconUrl={item.favicon_url} className="w-3.5 h-3.5" />
-            <span className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">{item.source_platform === "generic" ? "Web" : item.source_platform}</span>
-          </div>
-          <h3 className="font-semibold text-sm truncate text-gray-900 dark:text-gray-100 group-hover:text-[#0096C7] dark:group-hover:text-sky-400 transition-colors">
-            {item.title || item.url || "Untitled"}
-          </h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-            {item.summary || item.description || ""}
-          </p>
-          <PlatformMeta platform={item.source_platform} metadata={item.item_metadata} />
-          <CardTags tags={item.tags} />
-          <div className="mt-1.5">
-            <EnrichmentBadge status={item.enrichment_status} itemsAhead={itemsAhead} />
-          </div>
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <button onClick={toggleFavorite} aria-label="Toggle favorite" className="p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer">
-            <Star className={`w-4 h-4 ${item.is_favorite ? "fill-[#FCD34D] text-[#FCD34D]" : "text-gray-300 dark:text-gray-600"}`} />
-          </button>
-          <span className="text-xs text-gray-400 flex items-center gap-1">
-            <Clock className="w-3 h-3" />
-            {timeAgo(item.created_at)}
-          </span>
-        </div>
-      </Link>
-    );
-  }
-
-  // Grid variant (default)
   return (
-    <Link
-      to={`/item/${item.id}`}
-      className="flex flex-col rounded-2xl border border-gray-200/80 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden hover:border-sky-200 dark:hover:border-sky-800 transition-colors duration-200 cursor-pointer group"
-    >
+    <article className={`workspace-bookmark workspace-bookmark--${variant}`}>
       <BookmarkThumbnail
         itemId={item.id}
         itemType={item.item_type}
         sourcePlatform={item.source_platform}
-        url={item.url}
         faviconUrl={item.favicon_url}
         media={item.media}
         metadata={item.item_metadata}
-        shape="aspect-video"
-        iconSize="w-10 h-10"
+        shape={variant === "list" ? "square-16" : "aspect-video"}
+        iconSize="size-5"
+        hideFallback={variant === "grid"}
       />
-      <div className="p-4 flex-1 flex flex-col">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-1.5">
-            <PlatformIcon platform={item.source_platform} url={item.url} faviconUrl={item.favicon_url} className="w-3.5 h-3.5" />
-            <span className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">{item.source_platform === "generic" ? "Web" : item.source_platform}</span>
-          </div>
-          <button onClick={toggleFavorite} aria-label="Toggle favorite" className="p-1 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer">
-            <Star className={`w-4 h-4 ${item.is_favorite ? "fill-[#FCD34D] text-[#FCD34D]" : "text-gray-300 dark:text-gray-600 group-hover:text-gray-400"}`} />
-          </button>
+      <div className="workspace-bookmark__content">
+        <div className="workspace-bookmark__meta">
+          {source}<span aria-hidden="true"> · </span>{date}
         </div>
-        <h3 className="font-semibold text-sm line-clamp-2 mb-1 text-gray-900 dark:text-gray-100 group-hover:text-[#0096C7] dark:group-hover:text-sky-400 transition-colors">
-          {item.title || item.url || "Untitled"}
+        <h3>
+          <Link to={destination} className="workspace-bookmark__title">{title}</Link>
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 flex-1">
-          {item.summary || item.description || ""}
-        </p>
+        {(item.summary || item.description) && (
+          <p className="workspace-bookmark__description">{item.summary || item.description}</p>
+        )}
         <PlatformMeta platform={item.source_platform} metadata={item.item_metadata} />
         <CardTags tags={item.tags} />
-        <div className="flex items-center justify-between mt-2 gap-2">
-          <div className="flex items-center gap-1 text-xs text-gray-400 min-w-0">
-            <Clock className="w-3 h-3 flex-shrink-0" />
-            <span className="truncate">{timeAgo(item.created_at)}</span>
-          </div>
-          <EnrichmentBadge status={item.enrichment_status} itemsAhead={itemsAhead} />
-        </div>
+        <EnrichmentBadge status={item.enrichment_status} itemsAhead={itemsAhead} />
       </div>
-    </Link>
+      <button
+        type="button"
+        onClick={() => updateItem.mutate({ id: item.id, is_favorite: !item.is_favorite })}
+        aria-label="Toggle favorite"
+        aria-pressed={item.is_favorite}
+        disabled={updateItem.isPending}
+        className="workspace-icon-button workspace-bookmark__favorite"
+        title={item.is_favorite ? "Remove from favorites" : "Add to favorites"}
+      >
+        <Star size={17} aria-hidden="true" fill={item.is_favorite ? "currentColor" : "none"} />
+      </button>
+    </article>
   );
 }

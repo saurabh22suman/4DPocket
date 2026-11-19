@@ -1,147 +1,200 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, Plus, ChevronDown, StickyNote, Inbox, Clock } from "lucide-react";
+import { ArrowRight, BookOpen, Check, Folder, Link2, Plus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
-import { useItems } from "@/hooks/use-items";
+import { useCreateItem, useItems } from "@/hooks/use-items";
+import { useCollections } from "@/hooks/use-collections";
 import { BookmarkCard } from "@/components/bookmark/BookmarkCard";
+import { PlatformIcon } from "@/components/common/PlatformIcon";
+import { platformLabel } from "@/lib/platforms";
 
 interface Stats {
   total_items: number;
   items_this_week: number;
-  total_tags: number;
-  total_notes: number;
-  total_collections: number;
-  platforms: Record<string, number>;
-  top_tags: Array<{ name: string; count: number }>;
+  items_by_platform: Record<string, number>;
 }
 
-export default function Dashboard() {
-  const { data: stats, isLoading: statsLoading, isError: statsError } = useQuery<Stats>({
-    queryKey: ["stats"],
-    queryFn: () => api.get("/api/v1/stats"),
-  });
+function QuickSave() {
+  const create = useCreateItem();
+  const [link, setLink] = useState("");
+  const [invalidLink, setInvalidLink] = useState(false);
 
-  const { data, isLoading: itemsLoading, isError: itemsError } = useItems();
-
-  const [visibleCount, setVisibleCount] = useState(8);
-  const allItems = data?.pages.flat() ?? [];
-  const recentItems = allItems.slice(0, visibleCount);
-  const hasMore = allItems.length > visibleCount;
-
-  if (statsError || itemsError) {
-    return (
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-sm">
-          Failed to load dashboard data. Please try refreshing the page.
-        </div>
-      </div>
-    );
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const input = link.trim();
+    if (!input || create.isPending) return;
+    try {
+      const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(input) ? input : `https://${input}`);
+      if (!["http:", "https:"].includes(url.protocol) || !url.hostname.includes(".")) {
+        setInvalidLink(true);
+        return;
+      }
+      create.mutate({ url: url.href }, { onSuccess: () => setLink("") });
+    } catch {
+      setInvalidLink(true);
+    }
   }
 
   return (
-    <div className="animate-fade-in max-w-7xl mx-auto space-y-8">
-      {/* Action tiles — verb-oriented, not vanity counts */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
-        {[
-          { label: "Browse all", value: stats?.total_items, suffix: "items", icon: BookOpen, link: "/knowledge" },
-          { label: "Added this week", value: stats?.items_this_week, suffix: "new", icon: Inbox, link: "/knowledge" },
-          { label: "Open notes", value: stats?.total_notes, suffix: "notes", icon: StickyNote, link: "/notes" },
-          { label: "Continue reading", value: null, suffix: "", icon: Clock, link: "/reading-list" },
-        ].map((tile) => {
-          const Icon = tile.icon;
-          return (
-            <Link
-              key={tile.label}
-              to={tile.link}
-              className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 md:p-5 hover:border-sky-200 dark:hover:border-sky-800 transition-colors duration-200 cursor-pointer"
-            >
-              <div className="flex items-center gap-2.5 mb-3">
-                <div className="p-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
-                  <Icon className="h-4 w-4 md:h-5 md:w-5" />
-                </div>
-              </div>
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {tile.label}
-              </p>
-              {tile.value != null && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                  {statsLoading ? (
-                    <span className="inline-block w-8 h-3 animate-pulse bg-gray-200 dark:bg-gray-800 rounded" />
-                  ) : (
-                    `${tile.value} ${tile.suffix}`
-                  )}
-                </p>
-              )}
-            </Link>
-          );
-        })}
+    <section className="pocket-capture" aria-labelledby="quick-save-title">
+      <div className="pocket-capture__header">
+        <h2 id="quick-save-title" className="pocket-section-heading">Save a link</h2>
+        <Link to="/add" className="pocket-text-link">More save options <ArrowRight size={15} aria-hidden="true" /></Link>
+      </div>
+      <form className="pocket-capture__form" onSubmit={save} aria-busy={create.isPending}>
+        <div className="pocket-capture__input">
+          <Link2 size={18} aria-hidden="true" />
+          <label htmlFor="quick-save-url" className="sr-only">Link to save</label>
+          <input
+            id="quick-save-url"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            placeholder="Paste a link"
+            required
+            value={link}
+            onChange={(event) => {
+              setLink(event.target.value);
+              if (invalidLink) setInvalidLink(false);
+              if (create.isError || create.isSuccess) create.reset();
+            }}
+            aria-invalid={invalidLink}
+            aria-describedby={invalidLink || create.isError ? "quick-save-error" : undefined}
+          />
+        </div>
+        <button className="workspace-button workspace-button--primary" type="submit" disabled={create.isPending || !link.trim()}>
+          <Plus size={17} aria-hidden="true" /> {create.isPending ? "Saving…" : "Save link"}
+        </button>
+      </form>
+      {(invalidLink || create.isError) && (
+        <p className="pocket-error" id="quick-save-error" role="alert">
+          {invalidLink ? "Enter a valid web link." : "Couldn’t save this link. Check the address and try again."}
+        </p>
+      )}
+      {create.isSuccess && (
+        <div className="pocket-capture__saved" role="status">
+          <Check size={16} aria-hidden="true" /> Link saved.
+          <Link to={`/item/${create.data.id}`} className="pocket-text-link">View item</Link>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function Dashboard() {
+  const stats = useQuery<Stats>({
+    queryKey: ["stats"],
+    queryFn: () => api.get("/api/v1/stats"),
+  });
+  const items = useItems({ is_archived: false });
+  const collections = useCollections();
+  const recentItems = (items.data?.pages[0] ?? []).slice(0, 5);
+  const platforms = Object.entries(stats.data?.items_by_platform ?? {})
+    .map(([source, count]) => [source.replace(/^SourcePlatform\./, ""), count] as const)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  return (
+    <div className="pocket-dashboard">
+      <div className="pocket-page-title">
+        <h1 className="pocket-heading">Your pocket</h1>
+        {stats.data && (
+          <p className="pocket-dashboard__counts">
+            {stats.data.total_items} saved {stats.data.total_items === 1 ? "item" : "items"}
+            {stats.data.items_this_week > 0 && <> <span aria-hidden="true">·</span> {stats.data.items_this_week} this week</>}
+          </p>
+        )}
       </div>
 
-      {/* Recent Items */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg md:text-xl font-bold text-gray-900 dark:text-gray-100">
-            Recent Items
-          </h2>
-          <Link
-            to="/knowledge"
-            className="text-sm text-[#0096C7] hover:text-[#0077A8] font-medium transition-colors cursor-pointer"
-          >
-            View all →
-          </Link>
-        </div>
+      <QuickSave />
 
-        {itemsLoading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
-                <div className="aspect-video animate-pulse bg-gray-100 dark:bg-gray-800" />
-                <div className="p-4 space-y-2">
-                  <div className="h-3 w-16 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-                  <div className="h-4 w-full animate-pulse bg-gray-200 dark:bg-gray-700 rounded" />
-                  <div className="h-3 w-3/4 animate-pulse bg-gray-100 dark:bg-gray-800 rounded" />
-                </div>
-              </div>
-            ))}
+      <div className="pocket-dashboard__columns">
+        <section aria-labelledby="recent-items-title">
+          <div className="pocket-section-bar">
+            <h2 id="recent-items-title" className="pocket-section-heading">Recent items</h2>
+            <Link to="/knowledge" className="pocket-text-link">Open library <ArrowRight size={15} aria-hidden="true" /></Link>
           </div>
-        ) : recentItems.length === 0 ? (
-          <div className="text-center py-16 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-            <BookOpen className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-700 dark:text-gray-300 text-lg font-medium mb-1">
-              No saved items
-            </p>
-            <p className="text-gray-400 dark:text-gray-500 text-sm mb-6">
-              Save a URL or create a note to get started.
-            </p>
-            <Link
-              to="/add"
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#0096C7] text-white rounded-xl font-medium hover:bg-[#0077A8] hover:shadow-lg transition-all duration-200 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              Add your first item
-            </Link>
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {recentItems.map((item) => (
-                <BookmarkCard key={item.id} item={item} variant="grid" />
+          {items.isLoading ? (
+            <div className="pocket-list" role="status" aria-label="Loading saved items">
+              {Array.from({ length: 4 }, (_, index) => (
+                <div key={index} className="pocket-skeleton-row" aria-hidden="true"><span /><i /></div>
               ))}
             </div>
-            {hasMore && (
-              <div className="mt-6 text-center">
-                <button
-                  onClick={() => setVisibleCount((c) => c + 8)}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:shadow-md transition-all duration-200 cursor-pointer"
-                >
-                  <ChevronDown className="h-4 w-4" />
-                  View more
-                </button>
+          ) : items.isError && !items.data ? (
+            <div role="alert" className="pocket-empty">
+              <p>Couldn’t load your recent items.</p>
+              <button type="button" className="workspace-button" onClick={() => void items.refetch()}>Try again</button>
+            </div>
+          ) : recentItems.length === 0 ? (
+            <div className="pocket-empty">
+              <BookOpen size={24} aria-hidden="true" />
+              <h3>No saved items</h3>
+              <p>Save a web link above or add a note to get started.</p>
+              <Link to="/notes" className="pocket-text-link">Open notes <ArrowRight size={15} aria-hidden="true" /></Link>
+            </div>
+          ) : (
+            <ul className="pocket-list">
+              {recentItems.map((item) => <li key={item.id}><BookmarkCard item={item} variant="compact" /></li>)}
+            </ul>
+          )}
+        </section>
+
+        <div className="pocket-dashboard__side">
+          <section aria-labelledby="overview-collections-title">
+            <div className="pocket-section-bar">
+              <h2 id="overview-collections-title" className="pocket-section-heading">Collections</h2>
+              <Link to="/collections" className="pocket-text-link">View all <ArrowRight size={15} aria-hidden="true" /></Link>
+            </div>
+            {collections.isLoading ? (
+              <div className="pocket-list" role="status" aria-label="Loading collections">
+                <div className="pocket-skeleton-row" aria-hidden="true"><span /><i /></div>
+              </div>
+            ) : collections.isError && !collections.data ? (
+              <div className="pocket-empty" role="alert">
+                <p>Couldn’t load collections.</p>
+                <button type="button" className="workspace-button" onClick={() => void collections.refetch()}>Try again</button>
+              </div>
+            ) : collections.data?.length ? (
+              <ul className="pocket-list">
+                {collections.data.slice(0, 3).map((collection) => (
+                  <li key={collection.id}>
+                    <Link to={`/collections/${collection.id}`} className="pocket-list__link">
+                      <Folder size={17} aria-hidden="true" />
+                      <span>{collection.name}</span>
+                      <ArrowRight size={15} className="pocket-list__arrow" aria-hidden="true" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="pocket-empty">
+                <p>Group related saves into a collection.</p>
+                <Link to="/collections" className="pocket-text-link">New collection <ArrowRight size={15} aria-hidden="true" /></Link>
               </div>
             )}
-          </>
-        )}
+          </section>
+
+          {platforms.length > 0 && (
+            <section aria-labelledby="overview-sources-title">
+              <div className="pocket-section-bar">
+                <h2 id="overview-sources-title" className="pocket-section-heading">Sources</h2>
+              </div>
+              <ul className="pocket-list">
+                {platforms.map(([source, count]) => (
+                  <li key={source}>
+                    <Link to={`/knowledge?source=${encodeURIComponent(source)}`} className="pocket-list__link">
+                      <PlatformIcon platform={source} className="size-4" />
+                      <span>{platformLabel(source)}</span>
+                      <span className="pocket-list__count" aria-label={`${count} saved items`}>{count}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );

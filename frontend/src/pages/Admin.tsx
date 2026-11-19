@@ -1,4 +1,4 @@
-import { Shield, Users, Settings as SettingsIcon, Loader2, UserX, UserCheck, ShieldX, Sparkles, Eye, EyeOff, Activity, Database, HardDrive, Tag as TagIcon, FolderOpen, FileText, Users as UsersIcon } from "lucide-react";
+import { Users, Settings as SettingsIcon, Loader2, UserX, UserCheck, ShieldX, Sparkles, Eye, EyeOff, Activity, Database, HardDrive, Tag as TagIcon, FolderOpen, FileText, Users as UsersIcon } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -158,11 +158,8 @@ export default function Admin() {
   }
 
   return (
-    <div className="animate-fade-in max-w-5xl mx-auto px-4 md:px-6">
-      <div className="flex items-center gap-3 mb-6">
-        <Shield className="w-6 h-6 text-sky-600" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Admin Panel</h1>
-      </div>
+    <div className="pocket-admin max-w-5xl mx-auto">
+      <h1 className="pocket-heading mb-6">Admin Panel</h1>
 
       {authConfig?.invites_enabled && (
         <section className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 space-y-3">
@@ -252,7 +249,7 @@ export default function Admin() {
           <div className="flex items-center gap-2 text-gray-400"><Loader2 className="w-4 h-4 animate-spin" /> Loading...</div>
         ) : settings ? (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="pocket-admin__row">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Registration</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">Allow new users to register</p>
@@ -268,15 +265,17 @@ export default function Admin() {
                 {settings.registration_enabled ? "Enabled" : "Disabled"}
               </button>
             </div>
-            <div className="flex items-center justify-between">
+            <div className="pocket-admin__row">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Registration Mode</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">open / invite / disabled</p>
               </div>
-              <div className="flex gap-1">
+              <div className="pocket-admin__choices">
                 {["open", "invite", "disabled"].map((mode) => (
                   <button
                     key={mode}
+                    type="button"
+                    aria-pressed={settings.registration_mode === mode}
                     onClick={() => updateSettings.mutate({ registration_mode: mode })}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                       settings.registration_mode === mode
@@ -289,7 +288,7 @@ export default function Admin() {
                 ))}
               </div>
             </div>
-            <div className="flex items-center justify-between">
+            <div className="pocket-admin__row">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Instance Name</p>
               </div>
@@ -322,7 +321,7 @@ export default function Admin() {
             {users?.map((user) => (
               <div
                 key={user.id}
-                className="flex items-center gap-4 p-3 rounded-lg border border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-all"
+                className="pocket-admin__account flex items-center gap-4 p-3 rounded-lg border border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-all"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -332,7 +331,7 @@ export default function Admin() {
                       <span className="text-[10px] bg-sky-100 dark:bg-sky-900/30 text-sky-600 px-1.5 py-0.5 rounded font-medium">ADMIN</span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500">{user.email} · Joined {timeAgo(user.created_at)}</p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300 [overflow-wrap:anywhere]">{user.email} · Joined {timeAgo(user.created_at)}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -459,7 +458,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
 
       <div className="space-y-4">
         {/* Provider Selection */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Chat Provider</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">AI model provider for tagging and summarization</p>
@@ -596,7 +595,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
         </div>
 
         {/* Auto-tag */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Auto-tag</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">Automatically tag items with AI</p>
@@ -617,7 +616,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
         </div>
 
         {/* Auto-summarize */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Auto-summarize</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">Generate summaries for new items</p>
@@ -638,7 +637,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
         </div>
 
         {/* Sync enrichment */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Sync Enrichment</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">Run AI inline when background worker is not running</p>
@@ -659,7 +658,7 @@ function AIConfigSection({ config, onUpdate }: { config?: AIConfig; onUpdate: (d
         </div>
 
         {/* Embedding Provider */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Embedding Provider</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">Vector embeddings for semantic search</p>
@@ -751,7 +750,7 @@ function SearchConfigSection({ config, onUpdate }: { config?: SearchConfig; onUp
         </div>
 
         {/* Enable toggle */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Enable graph ranker</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -775,7 +774,7 @@ function SearchConfigSection({ config, onUpdate }: { config?: SearchConfig; onUp
         </div>
 
         {/* Hop decay */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div className="flex-1 pr-4">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Hop decay</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -794,7 +793,7 @@ function SearchConfigSection({ config, onUpdate }: { config?: SearchConfig; onUp
         </div>
 
         {/* Top k */}
-        <div className="flex items-center justify-between">
+        <div className="pocket-admin__row">
           <div className="flex-1 pr-4">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Top K</p>
             <p className="text-xs text-gray-500 dark:text-gray-400">Max items returned by the graph ranker before fusion</p>

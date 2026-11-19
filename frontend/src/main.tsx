@@ -5,6 +5,8 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import { queryClient } from "./lib/query-client";
+import "@fontsource-variable/instrument-sans";
+import "@fontsource-variable/bricolage-grotesque";
 import "./styles/globals.css";
 
 createRoot(document.getElementById("root")!).render(

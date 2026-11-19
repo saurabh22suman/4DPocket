@@ -11,7 +11,7 @@ const FOCUSABLE_SELECTORS = [
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS)).filter(
-    (el) => !el.closest("[hidden]") && el.tabIndex !== -1
+    (el) => !el.closest("[hidden]") && el.tabIndex !== -1 && el.getClientRects().length > 0
   );
 }
 

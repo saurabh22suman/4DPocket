@@ -1,24 +1,19 @@
 import { type FormEvent, type ReactNode, useState } from "react";
+import { AuthLayout } from "@/components/auth/AuthLayout";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuthConfig, useConfirmPasswordReset, useRequestPasswordReset } from "@/hooks/use-auth";
 
 const inputStyle = "w-full rounded-xl border border-gray-200 bg-sky-50 px-4 py-2.5 text-sm focus-visible:outline-2 focus-visible:outline-sky-700 dark:border-gray-700 dark:bg-gray-800";
-const buttonStyle = "w-full rounded-xl bg-sky-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-sky-900 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60";
-const linkStyle = "text-sm font-medium text-sky-800 hover:underline dark:text-sky-300";
+const buttonStyle = "workspace-button workspace-button--primary w-full";
+const linkStyle = "pocket-text-link";
 const passwordRequirements = "Use at least 8 characters, including an uppercase letter, a number, and a special character.";
 
 function RecoveryCard({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-[#F0F9FF] p-4 dark:bg-[#0C1222]">
-      <div className="w-full max-w-sm">
-        <img src="/icons/icon-512.png" alt="4DPocket" className="mx-auto mb-6 size-16 rounded-xl" />
-        <section className="space-y-4 rounded-2xl border border-sky-100 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">{title}</h1>
-          {children}
-          <Link to="/login" className={linkStyle}>Back to sign in</Link>
-        </section>
-      </div>
-    </main>
+    <AuthLayout title={title}>
+      {children}
+      <Link to="/login" className={linkStyle}>Back to sign in</Link>
+    </AuthLayout>
   );
 }
 

@@ -18,7 +18,7 @@ export const useUIStore = create<UIState>()(
     (set) => ({
       theme: "system",
       sidebarCollapsed: false,
-      viewMode: "grid",
+      viewMode: "list",
       setTheme: (theme) => {
         set({ theme });
         applyTheme(theme);
