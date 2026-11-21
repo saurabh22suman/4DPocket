@@ -5,11 +5,19 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from fourdpocket.processors.youtube import YouTubeProcessor, _extract_video_id
+
+
+@pytest.fixture(autouse=True)
+def stub_youtube_preview(monkeypatch):
+    preview = AsyncMock(side_effect=RuntimeError("No preview fixture"))
+    monkeypatch.setattr(YouTubeProcessor, "_fetch_url", preview)
+    return preview
 
 # ─── URL pattern matching ────────────────────────────────────────────────────
 
@@ -88,6 +96,26 @@ def _make_mock_youtube_transcript_api(mock_tlist):
 class TestYouTubeProcess:
     """Full process() tests with yt-dlp + transcript mocking."""
 
+    def test_official_preview_recovers_title_when_extraction_is_blocked(self, stub_youtube_preview):
+        stub_youtube_preview.side_effect = None
+        stub_youtube_preview.return_value = httpx.Response(200, json={
+            "title": "Finding the right dough hydration",
+            "author_name": "Example Bakery",
+            "thumbnail_url": "https://i.ytimg.com/vi/abc123xAbC1/hqdefault.jpg",
+        })
+        with patch.dict(sys.modules, {
+            "yt_dlp": _make_mock_ytdlp(exc=RuntimeError("Sign in required")),
+            "youtube_transcript_api": None,
+        }):
+            result = asyncio.run(YouTubeProcessor().process(
+                "https://youtube.com/shorts/abc123xAbC1?si=tracking"
+            ))
+
+        assert result.title == "Finding the right dough hydration"
+        assert not result.description
+        assert [section.kind for section in result.sections] == ["title"]
+        assert "tracking" not in stub_youtube_preview.call_args.args[0]
+
     def test_process_with_yt_dlp_and_transcript(self):
         """yt-dlp returns metadata + chapters; transcript API returns segments."""
         info = {
@@ -145,7 +173,7 @@ class TestYouTubeProcess:
 
     def test_process_yt_dlp_not_installed(self):
         """yt-dlp not installed → failed status."""
-        with patch.dict(sys.modules, {"yt_dlp": None}):
+        with patch.dict(sys.modules, {"yt_dlp": None, "youtube_transcript_api": None}):
             proc = YouTubeProcessor()
             result = asyncio.run(proc.process("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
         assert result.status.value == "failed"

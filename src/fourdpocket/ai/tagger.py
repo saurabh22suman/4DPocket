@@ -7,10 +7,12 @@ import uuid
 from sqlmodel import Session, select
 
 from fourdpocket.ai.factory import get_chat_provider
+from fourdpocket.ai.item_text import item_prompt_fields
 from fourdpocket.ai.llm_cache import get_cached_response, store_cached_response
 from fourdpocket.ai.sanitizer import sanitize_for_prompt
 from fourdpocket.ai.tag_slug import normalize_tag_slug
 from fourdpocket.config import get_settings
+from fourdpocket.models.item import KnowledgeItem
 from fourdpocket.models.tag import ItemTag, Tag
 
 logger = logging.getLogger(__name__)
@@ -18,10 +20,11 @@ logger = logging.getLogger(__name__)
 TAGGING_SYSTEM_PROMPT = """You are a knowledge base tagging assistant. Given content, generate relevant tags with confidence scores.
 
 Rules:
-- Return 3-8 tags
+- Return up to 6 tags, or an empty list if no topic is supported
 - Each tag has a name (lowercase, hyphenated) and confidence (0.0-1.0)
 - Tags should be specific and useful for retrieval
-- Include both broad categories and specific topics
+- Name the subject, technique, ingredients, or concepts that someone would search for
+- Avoid platform names, content formats, and vague tags such as video, shorts, post, and tutorial
 - Return valid JSON only
 
 Output format:
@@ -29,15 +32,21 @@ Output format:
 
 TAGGING_FEW_SHOT = """Example 1:
 Content: "Building a RAG Pipeline with LangChain and Pinecone - A tutorial on retrieval augmented generation"
-Output: {"tags": [{"name": "rag", "confidence": 0.97}, {"name": "langchain", "confidence": 0.95}, {"name": "vector-databases", "confidence": 0.85}, {"name": "python", "confidence": 0.8}, {"name": "ai", "confidence": 0.75}, {"name": "tutorial", "confidence": 0.7}]}
+Output: {"tags": [{"name": "rag", "confidence": 0.97}, {"name": "langchain", "confidence": 0.95}, {"name": "vector-databases", "confidence": 0.85}]}
 
 Example 2:
 Content: "Kubernetes vs Docker Swarm: Which Container Orchestration Tool Should You Choose?"
-Output: {"tags": [{"name": "kubernetes", "confidence": 0.95}, {"name": "docker", "confidence": 0.9}, {"name": "devops", "confidence": 0.85}, {"name": "containers", "confidence": 0.85}, {"name": "comparison", "confidence": 0.7}]}
+Output: {"tags": [{"name": "kubernetes", "confidence": 0.95}, {"name": "docker-swarm", "confidence": 0.9}, {"name": "container-orchestration", "confidence": 0.85}]}
 
 Example 3:
 Content: "How to Make Perfect Sourdough Bread at Home - Complete Guide"
-Output: {"tags": [{"name": "sourdough", "confidence": 0.97}, {"name": "bread", "confidence": 0.95}, {"name": "baking", "confidence": 0.9}, {"name": "recipe", "confidence": 0.85}, {"name": "cooking", "confidence": 0.7}]}"""
+Output: {"tags": [{"name": "sourdough", "confidence": 0.97}, {"name": "bread-baking", "confidence": 0.95}, {"name": "home-baking", "confidence": 0.9}]}"""
+
+_FORMAT_TAGS = {
+    "youtube", "instagram", "tiktok", "video", "short", "shorts", "youtube-short",
+    "youtube-shorts", "reel", "reels", "instagram-reel", "instagram-reels", "post",
+    "link", "tutorial", "article", "content-filtered",
+}
 
 
 def _slugify_tag(name: str) -> str:
@@ -57,7 +66,7 @@ def generate_tags(
     if description:
         text_parts.append(f"Description: {sanitize_for_prompt(description, max_length=500)}")
     if content:
-        text_parts.append(f"Content: {sanitize_for_prompt(content, max_length=3000)}")
+        text_parts.append(f"Content: {sanitize_for_prompt(content, max_length=8000)}")
 
     if not text_parts:
         return []
@@ -67,7 +76,7 @@ def generate_tags(
     analysis_text = "\n".join(text_parts)
 
     if db is not None:
-        cached = get_cached_response(db, analysis_text, "tagging", model_name, json_mode=True)
+        cached = get_cached_response(db, analysis_text, "tagging-v2", model_name, json_mode=True)
         if cached is not None:
             return cached.get("tags", [])
 
@@ -79,10 +88,12 @@ def generate_tags(
     )
 
     result = chat.generate_json(prompt, system_prompt=TAGGING_SYSTEM_PROMPT)
-    tags = result.get("tags", [])
+    tags = result.get("tags", []) if isinstance(result, dict) else []
+    if not isinstance(tags, list):
+        return []
 
     if db is not None and tags:
-        store_cached_response(db, analysis_text, "tagging", {"tags": tags}, model_name, json_mode=True)
+        store_cached_response(db, analysis_text, "tagging-v2", {"tags": tags}, model_name, json_mode=True)
 
     return tags
 
@@ -116,11 +127,13 @@ def auto_tag_item(
     suggest_threshold = settings.ai.tag_suggestion_threshold
 
     for tag_data in raw_tags:
-        tag_name = tag_data.get("name", "").strip().lower()
+        if not isinstance(tag_data, dict) or not isinstance(tag_data.get("name"), str):
+            continue
+        tag_name = tag_data["name"].strip().lower()
         confidence = tag_data.get("confidence", 0)
 
         # Validate AI output: name must be a sane string, confidence a number
-        if not isinstance(tag_name, str) or not tag_name:
+        if not tag_name:
             continue
         try:
             confidence = float(confidence)
@@ -135,7 +148,7 @@ def auto_tag_item(
             continue
 
         slug = _slugify_tag(tag_name)
-        if not slug or slug == "content-filtered":
+        if not slug or slug in _FORMAT_TAGS:
             continue
         auto_applied = confidence >= auto_threshold
 
@@ -177,6 +190,36 @@ def auto_tag_item(
     db.commit()
     logger.info("Tagged item %s with %d tags", item_id, len(applied_tags))
     return applied_tags
+
+
+def tag_saved_item(item: KnowledgeItem, db: Session) -> list[dict]:
+    """Refresh AI-generated bookmark tags while preserving manually attached tags."""
+    if not get_settings().ai.auto_tag:
+        return []
+
+    fields = item_prompt_fields(item)
+    tags = auto_tag_item(item.id, item.user_id, *fields, db=db) if fields else []
+    if not item.url:
+        return tags
+
+    applied = {tag["tag_id"] for tag in tags if tag["auto_applied"]}
+    previous = db.exec(
+        select(ItemTag, Tag).join(Tag, Tag.id == ItemTag.tag_id).where(
+            ItemTag.item_id == item.id, ItemTag.confidence.is_not(None),
+            Tag.user_id == item.user_id, Tag.ai_generated.is_(True),
+        )
+    ).all()
+    for link, tag in previous:
+        if str(tag.id) in applied:
+            continue
+        # Preserve useful tags if the provider returned no usable result for real content.
+        if fields is None or applied or tag.slug in _FORMAT_TAGS:
+            db.delete(link)
+            if tag.usage_count:
+                tag.usage_count = Tag.usage_count - 1
+                db.add(tag)
+    db.commit()
+    return tags
 
 
 def auto_tag_note(

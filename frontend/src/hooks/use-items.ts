@@ -77,11 +77,14 @@ export function useItems(filters: ItemFilters = {}) {
   });
 }
 
-export function useItem(id: string) {
+export function useItem(id: string, refreshUntil = 0) {
   return useQuery<Item>({
     queryKey: ["item", id],
     queryFn: () => api.get(`/api/v1/items/${id}`),
     enabled: !!id,
+    refetchInterval: (query) => refreshUntil > Date.now()
+      || ["pending", "processing"].includes(query.state.data?.enrichment_status?.overall ?? "")
+      ? 3000 : false,
     // Don't retry 404s — the "Item not found" state should appear immediately.
     retry: (failureCount, err) =>
       failureCount < 1 && !(err instanceof Error && /404/.test(err.message)),

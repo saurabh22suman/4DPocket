@@ -43,6 +43,12 @@ def test_admin_invite_allows_one_regular_account(client, auth_headers, second_us
 
     duplicate = client.post("/api/v1/auth/register", json=_registration("testuser", token))
     assert duplicate.status_code == 409
+    invalid_name = {**_registration("invited", token), "username": "sample name"}
+    invalid = client.post("/api/v1/auth/register", json=invalid_name)
+    assert invalid.status_code == 422
+    assert "letters, numbers" in invalid.json()["detail"][0]["msg"]
+    db.expire_all()
+    assert db.get(AccountInvite, hash_token(token)).used_at is None
     accepted = client.post("/api/v1/auth/register", json=_registration("invited", token))
     assert accepted.status_code == 201
     assert accepted.json()["role"] == "user"

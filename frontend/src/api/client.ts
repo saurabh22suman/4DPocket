@@ -24,6 +24,25 @@ export async function apiFetch(
   return res;
 }
 
+async function responseError(res: Response): Promise<Error> {
+  const fallback = res.statusText || `Request failed (${res.status})`;
+  try {
+    const body: { detail?: unknown } = await res.json();
+    if (typeof body.detail === "string" && body.detail.trim()) return new Error(body.detail);
+    if (Array.isArray(body.detail)) {
+      const messages = body.detail.flatMap((issue: unknown) => {
+        if (typeof issue !== "object" || !issue || !("msg" in issue)
+            || typeof issue.msg !== "string") return [];
+        return [issue.msg.replace(/^Value error,\s*/i, "")];
+      });
+      if (messages.length) return new Error([...new Set(messages)].join(". "));
+    }
+  } catch {
+    // Some server errors return a non-JSON body.
+  }
+  return new Error(fallback);
+}
+
 // API helper functions
 export const api = {
   async get<T>(url: string): Promise<T> {
@@ -37,14 +56,7 @@ export const api = {
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        const err = await res.json();
-        detail = err.detail || detail;
-      } catch {}
-      throw new Error(detail);
-    }
+    if (!res.ok) throw await responseError(res);
     return res.json();
   },
 
@@ -53,14 +65,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        const err = await res.json();
-        detail = err.detail || detail;
-      } catch {}
-      throw new Error(detail);
-    }
+    if (!res.ok) throw await responseError(res);
     return res.json();
   },
 

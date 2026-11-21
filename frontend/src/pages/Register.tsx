@@ -12,6 +12,7 @@ export default function Register() {
   const [showPassword, setShowPassword] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
+  const [usernameError, setUsernameError] = useState(false);
   const navigate = useNavigate();
   const { hash } = useLocation();
   const inviteToken = new URLSearchParams(hash.slice(1)).get("invite");
@@ -21,6 +22,15 @@ export default function Register() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setUsernameError(false);
+
+    const cleanUsername = username.trim();
+    const cleanEmail = email.trim();
+    if (!/^[a-zA-Z0-9_.-]{2,30}$/.test(cleanUsername)) {
+      setUsernameError(true);
+      setError("Choose a username with 2–30 letters, numbers, dots, underscores, or hyphens.");
+      return;
+    }
 
     if (password.length < 8) {
       setError("Password must be at least 8 characters");
@@ -29,22 +39,22 @@ export default function Register() {
 
     try {
       await register.mutateAsync({
-        username,
-        email,
+        username: cleanUsername,
+        email: cleanEmail,
         password,
         display_name: displayName || undefined,
         invite_token: inviteToken ?? undefined,
       });
-      // Auto-login after registration
-      await login.mutateAsync({ identifier: email, password });
-      navigate("/", { replace: true });
     } catch (err: unknown) {
-      const isConflict = err instanceof Error && err.message.includes("409");
-      if (isConflict) {
-        setError("Email or username already registered");
-      } else {
-        setError(err instanceof Error ? err.message : "Registration failed");
-      }
+      setError(err instanceof Error ? err.message : "Registration failed. Please try again.");
+      return;
+    }
+
+    try {
+      await login.mutateAsync({ identifier: cleanEmail, password });
+      navigate("/", { replace: true });
+    } catch {
+      setError("Your account was created. Use the sign-in link below to continue.");
     }
   };
 
@@ -63,13 +73,25 @@ export default function Register() {
             name="username"
             autoComplete="username"
             type="text"
+            autoCapitalize="none"
+            spellCheck={false}
+            aria-describedby="register-username-help"
+            aria-invalid={usernameError}
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Choose a username"
+            onChange={(e) => {
+              setUsername(e.target.value);
+              if (usernameError) {
+                setUsernameError(false);
+                setError("");
+              }
+            }}
+            placeholder="e.g. sam_lee"
             required
-            minLength={3}
             className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-[#F0F9FF] dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0096C7] focus:border-transparent transition-all"
           />
+          <p id="register-username-help" className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Use 2–30 characters with no spaces. You can put your full name in Display Name.
+          </p>
         </div>
 
         <div>
@@ -118,6 +140,7 @@ export default function Register() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="At least 8 characters"
+              aria-describedby="register-password-help"
               required
               minLength={8}
               className="w-full px-4 py-2.5 pr-11 rounded-xl border border-gray-200 dark:border-gray-700 bg-[#F0F9FF] dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#0096C7] focus:border-transparent transition-all"
@@ -131,12 +154,15 @@ export default function Register() {
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
+          <p id="register-password-help" className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Include an uppercase letter, a number, and a special character.
+          </p>
         </div>
 
-        {(error || register.isError) && (
+        {error && (
           <div role="alert" className="flex items-center gap-2 text-red-500 text-sm bg-red-50 dark:bg-red-950/30 px-3 py-2 rounded-xl">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            {error || "Registration failed. Please try again."}
+            {error}
           </div>
         )}
 

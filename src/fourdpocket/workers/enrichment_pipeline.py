@@ -404,22 +404,14 @@ def handle_embedding(db: Session, item_id: uuid.UUID, user_id: uuid.UUID) -> Non
 def handle_tagging(db: Session, item_id: uuid.UUID, user_id: uuid.UUID) -> None:
     """Auto-tag item using AI, plus attach a domain tag for generic items."""
     from fourdpocket.ai.domain_tagger import attach_domain_tag
-    from fourdpocket.ai.tagger import auto_tag_item
+    from fourdpocket.ai.tagger import tag_saved_item
     from fourdpocket.models.item import KnowledgeItem
 
     item = db.get(KnowledgeItem, item_id)
     if not item:
         return
 
-    # Sanitization happens inside generate_tags (tagger is the security boundary)
-    tags = auto_tag_item(
-        item_id=item.id,
-        user_id=user_id,
-        title=item.title or "",
-        content=item.content or "",
-        description=item.description or "",
-        db=db,
-    )
+    tags = tag_saved_item(item, db)
 
     # Apply hierarchy
     if tags:

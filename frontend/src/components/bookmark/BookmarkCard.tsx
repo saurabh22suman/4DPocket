@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Star, GitFork, MessageSquare, Eye, ArrowRight, ArrowUp, Hash } from "lucide-react";
 import { timeAgo } from "@/lib/utils";
 import { platformLabel } from "@/lib/platforms";
+import { bookmarkTitle } from "@/lib/bookmark-title";
 import { useUpdateItem, useQueueStats, type EnrichmentStatus } from "@/hooks/use-items";
 import { PlatformIcon } from "@/components/common/PlatformIcon";
 import { EnrichmentBadge } from "@/components/bookmark/EnrichmentBadge";
@@ -128,7 +129,7 @@ export function BookmarkCard({ item, variant = "grid" }: BookmarkCardProps) {
   const queueStats = useQueueStats(enrichmentProcessing);
   const itemsAhead = enrichmentProcessing ? queueStats.data?.items_in_flight : undefined;
   const destination = `/item/${item.id}`;
-  const title = item.title || item.url || "Untitled";
+  const title = bookmarkTitle(item);
   const source = platformLabel(item.source_platform);
   const date = timeAgo(item.created_at);
 
@@ -140,6 +141,7 @@ export function BookmarkCard({ item, variant = "grid" }: BookmarkCardProps) {
         </span>
         <div className="pocket-recent-item__text">
           <span className="pocket-recent-item__title">{title}</span>
+          {item.summary && <span className="pocket-recent-item__summary">{item.summary}</span>}
           <span className="pocket-recent-item__meta">{source}<span aria-hidden="true"> · </span>{date}</span>
         </div>
         <ArrowRight size={17} className="pocket-recent-item__arrow" aria-hidden="true" />

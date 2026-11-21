@@ -48,6 +48,28 @@ class _FakeChat:
         return self.response
 
 
+def test_refresh_replaces_format_tags_and_keeps_manual_links(db, monkeypatch):
+    user = _user(db)
+    item = _item(db, user.id, "Sourdough baking")
+    item.url = "https://www.youtube.com/shorts/abc123xAbC1"
+    stale = Tag(user_id=user.id, name="shorts", slug="shorts", ai_generated=True, usage_count=1)
+    manual = Tag(user_id=user.id, name="to try", slug="to-try", ai_generated=True, usage_count=1)
+    db.add_all([stale, manual])
+    db.flush()
+    db.add_all([ItemTag(item_id=item.id, tag_id=stale.id, confidence=0.7),
+                ItemTag(item_id=item.id, tag_id=manual.id)])
+    db.commit()
+    fake = _FakeChat({"tags": [{"name": "youtube", "confidence": 0.99},
+                               {"name": "bread-baking", "confidence": 0.98}]})
+    monkeypatch.setattr(tagger, "get_chat_provider", lambda: fake)
+
+    tagger.tag_saved_item(item, db)
+
+    links = db.exec(select(Tag.slug).join(ItemTag).where(ItemTag.item_id == item.id)).all()
+    assert set(links) == {"bread-baking", "to-try"}
+    assert stale.usage_count == 0
+
+
 # ─── generate_tags ────────────────────────────────────────────────────────────
 
 

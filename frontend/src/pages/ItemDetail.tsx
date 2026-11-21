@@ -49,6 +49,7 @@ import { useToggleReadingList, useMarkAsRead } from "@/hooks/use-reading-list";
 import { useHighlights } from "@/hooks/use-highlights";
 import { useItemLinks, useAddItemLink, useRemoveItemLink } from "@/hooks/use-item-links";
 import { formatDate } from "@/lib/utils";
+import { bookmarkTitle } from "@/lib/bookmark-title";
 import { ShareDialog } from "@/components/sharing/ShareDialog";
 import { EditBookmarkForm } from "@/components/bookmark/BookmarkForm";
 
@@ -530,7 +531,9 @@ export default function ItemDetail() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const validId = id && UUID_RE.test(id) ? id : "";
-  const { data: item, isLoading, isError } = useItem(validId);
+  const [refreshRequest, setRefreshRequest] = useState<{ until: number; previous: unknown }>();
+  const refreshUntil = refreshRequest?.until ?? 0;
+  const { data: item, isLoading, isError } = useItem(validId, refreshUntil);
   const updateItem = useUpdateItem();
   const deleteItem = useDeleteItem();
   const [shareOpen, setShareOpen] = useState(false);
@@ -568,6 +571,7 @@ export default function ItemDetail() {
     queryKey: ["items", validId, "tags"],
     queryFn: () => api.get(`/api/v1/items/${validId}/tags`),
     enabled: !!validId,
+    refetchInterval: refreshUntil > Date.now() ? 3000 : false,
   });
 
   const { data: comments } = useQuery<Array<{
@@ -596,15 +600,17 @@ export default function ItemDetail() {
     addComment.mutate(trimmed);
   };
 
-  const [reprocessing, setReprocessing] = useState(false);
-  const handleReprocess = async () => {
-    if (!item?.url) return;
-    setReprocessing(true);
-    try {
-      await api.post(`/api/v1/items/${item.id}/reprocess`);
-    } catch {}
-    setTimeout(() => setReprocessing(false), 2000);
-  };
+  const refreshSource = useMutation({
+    mutationFn: () => api.post(`/api/v1/items/${validId}/reprocess`),
+    onSuccess: () => setRefreshRequest({
+      until: Date.now() + 120_000,
+      previous: item?.item_metadata._source_fetched_at,
+    }),
+  });
+  const awaitingSource = refreshRequest && refreshUntil > Date.now()
+    && refreshRequest.previous === item?.item_metadata._source_fetched_at;
+  const reprocessing = refreshSource.isPending || awaitingSource ||
+    ["pending", "processing"].includes(item?.enrichment_status?.overall ?? "");
 
   if (isLoading && validId) {
     return (
@@ -730,7 +736,7 @@ export default function ItemDetail() {
           </button>
           {item.url && (
             <button
-              onClick={handleReprocess}
+              onClick={() => refreshSource.mutate()}
               disabled={reprocessing}
               aria-label="Refresh content"
               title="Re-fetch and reprocess content"
@@ -831,8 +837,8 @@ export default function ItemDetail() {
             {formatDate(item.created_at)}
           </span>
         </div>
-        <h1 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-gray-100 leading-tight">
-          {item.title || item.url || "Untitled"}
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-gray-100 leading-tight [overflow-wrap:anywhere]">
+          {bookmarkTitle(item)}
         </h1>
         {item.url && (
           <a
@@ -847,16 +853,21 @@ export default function ItemDetail() {
         )}
       </div>
 
-      {item.summary && (
+      {(item.summary || item.url) && (
         <div className="rounded-2xl border border-[#0096C7]/20 dark:border-sky-800/50 bg-gradient-to-br from-sky-50 to-white dark:from-sky-950/30 dark:to-gray-900 p-5">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-[#0096C7] mb-2 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-[#0096C7]" />
-            AI Summary
+            Brief
           </h2>
           <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-            {item.summary}
+            {item.summary || (reprocessing
+              ? "Reading the source…"
+              : "There’s no brief yet. 4DPocket needs a description, caption, or transcript to summarize this bookmark.")}
           </p>
         </div>
+      )}
+      {refreshSource.error && (
+        <p role="alert" className="text-sm text-red-600 dark:text-red-400">{refreshSource.error.message}</p>
       )}
 
       {tags.length > 0 && (

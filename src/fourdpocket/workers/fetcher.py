@@ -53,8 +53,11 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
     Runs the extraction pipeline as a background task with retry logic.
     """
     from sqlmodel import Session
+    from sqlalchemy import update
 
     from fourdpocket.db.session import get_engine
+    from fourdpocket.models.base import utc_now
+    from fourdpocket.models.enrichment import EnrichmentStage
     from fourdpocket.models.item import KnowledgeItem
     from fourdpocket.search import get_search_service
 
@@ -63,7 +66,7 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
     engine = get_engine()
     with Session(engine) as db:
         item = db.get(KnowledgeItem, uuid.UUID(item_id))
-        if not item:
+        if not item or str(item.user_id) != user_id:
             logger.error("Item %s not found", item_id)
             return {"status": "error", "error": "Item not found"}
 
@@ -78,7 +81,7 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
             result = asyncio.run(processor.process(url))
 
             # Update existing item with extracted content
-            if result.title:
+            if result.title and (result.title != url or not item.title):
                 item.title = result.title
             if result.description:
                 item.description = result.description
@@ -92,11 +95,21 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
             from dataclasses import asdict
 
             from fourdpocket.processors.sections import (
+                Section,
                 section_summary_for_metadata,
                 sections_to_text,
             )
             sections = getattr(result, "sections", None) or []
             if sections:
+                # A transient captions failure during refresh shouldn't erase a
+                # transcript that was already retrieved for this URL.
+                previous = (item.item_metadata or {}).get("_sections") or []
+                if not any(section.kind == "transcript_segment" for section in sections):
+                    sections = [
+                        *sections,
+                        *(Section(**section) for section in previous
+                          if isinstance(section, dict) and section.get("kind") == "transcript_segment"),
+                    ]
                 # Persist the section payload alongside other metadata so
                 # the chunker can re-hydrate it. Capped per item via
                 # max_chunks at chunking time.
@@ -125,6 +138,19 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
                     merged["_sections"] = item.item_metadata["_sections"]
                 item.item_metadata = merged
 
+            metadata = {**item.item_metadata, "_source_fetched_at": utc_now().isoformat()}
+            metadata.pop("_processing_error", None)
+            for key in ("yt_dlp_error", "transcript_error"):
+                if key not in result.metadata:
+                    metadata.pop(key, None)
+            item.item_metadata = metadata
+            # A refresh must rerun completed enrichment with the newly fetched text.
+            db.exec(
+                update(EnrichmentStage)
+                .where(EnrichmentStage.item_id == item.id, EnrichmentStage.status != "running")
+                .values(status="pending", attempts=0, last_error=None, started_at=None,
+                        finished_at=None, updated_at=utc_now())
+            )
             db.add(item)
             db.commit()
             db.refresh(item)
@@ -150,7 +176,7 @@ def fetch_and_process_url(item_id: str, url: str, user_id: str) -> dict:
                 if result.media:
                     media_urls = [
                         {"url": m.get("url", ""), "type": m.get("type", "unknown"), "role": m.get("role", "")}
-                        for m in result.media if m.get("url")
+                        for m in result.media if m.get("url") and m.get("role") != "external"
                     ]
                     if media_urls:
                         from fourdpocket.workers.media_downloader import download_media

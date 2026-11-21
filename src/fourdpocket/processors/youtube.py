@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fourdpocket.processors.base import BaseProcessor, ProcessorResult, ProcessorStatus
 from fourdpocket.processors.registry import register_processor
@@ -32,15 +33,22 @@ logger = logging.getLogger(__name__)
 _WATCH_URL = r"youtube\.com/watch\?(?:[^#]*?&)?v="
 
 def _extract_video_id(url: str) -> str | None:
-    patterns = [
-        rf"(?:{_WATCH_URL}|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{{11}})",
-        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in {"http", "https"}:
+        return None
+    segments = parts.path.strip("/").split("/")
+    video_id = ""
+    if parts.hostname in {"youtu.be", "www.youtu.be"} and len(segments) == 1:
+        video_id = segments[0]
+    elif parts.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if segments == ["watch"]:
+            video_id = parse_qs(parts.query).get("v", [""])[0]
+        elif len(segments) == 2 and segments[0] in {"shorts", "embed"}:
+            video_id = segments[1]
+    return video_id if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else None
 
 
 def _chapter_for_timestamp(chapters: list[dict], t_start: float) -> int | None:
@@ -80,6 +88,8 @@ class YouTubeProcessor(BaseProcessor):
         media: list[dict] = []
         chapters: list[dict] = []
         metadata: dict = {"video_id": video_id}
+        canonical = f"https://www.youtube.com/watch?v={video_id}"
+        extractor_missing = False
 
         # ─── yt-dlp: metadata + chapters ───
         try:
@@ -88,8 +98,9 @@ class YouTubeProcessor(BaseProcessor):
             with yt_dlp.YoutubeDL({
                 "quiet": True, "no_warnings": True,
                 "skip_download": True, "extract_flat": False,
+                "noplaylist": True, "socket_timeout": 12,
             }) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(canonical, download=False)
             if info:
                 title = info.get("title")
                 description = info.get("description") or ""
@@ -113,21 +124,29 @@ class YouTubeProcessor(BaseProcessor):
                 thumb = info.get("thumbnail")
                 if thumb:
                     media.append({"type": "image", "url": thumb, "role": "thumbnail"})
-                # Always include a video reference so cards can show "watch on YouTube".
-                media.append({
-                    "type": "video", "url": url, "role": "external",
-                    "platform": "youtube",
-                })
         except ImportError:
-            return ProcessorResult(
-                title=url, source_platform="youtube",
-                status=ProcessorStatus.failed,
-                error="yt-dlp not installed",
-                metadata={"video_id": video_id},
-            )
+            extractor_missing = True
         except Exception as e:
             logger.warning("yt-dlp failed for %s: %s", url, e)
             metadata["yt_dlp_error"] = str(e)[:200]
+
+        if not title:
+            try:
+                query = urlencode({"url": canonical, "format": "json"})
+                preview = (await self._fetch_url(
+                    f"https://www.youtube.com/oembed?{query}", timeout=8
+                )).json()
+                title = preview.get("title")
+                metadata["channel"] = preview.get("author_name")
+                metadata["channel_url"] = preview.get("author_url")
+                metadata["is_short"] = "/shorts/" in url
+                if preview.get("thumbnail_url"):
+                    media.append({"type": "image", "url": preview["thumbnail_url"], "role": "thumbnail"})
+            except Exception:
+                logger.debug("Could not load YouTube preview for %s", video_id)
+
+        # Always retain the original link as the playable reference.
+        media.append({"type": "video", "url": url, "role": "external", "platform": "youtube"})
 
         # ─── Transcript with per-segment timing ───
         transcript_segments: list[dict] = []
@@ -270,7 +289,10 @@ class YouTubeProcessor(BaseProcessor):
         # ─── Status ───
         status = ProcessorStatus.success
         error = None
-        if not title:
+        if extractor_missing and not title and not transcript_segments:
+            status = ProcessorStatus.failed
+            error = "yt-dlp not installed"
+        elif not title:
             status = ProcessorStatus.partial
             error = "Could not extract full metadata"
         elif not transcript_segments and "transcript_error" in metadata:

@@ -517,7 +517,14 @@
   background: var(--pocket-rail);
 }
 .pocket-recent-item__text { display: grid; gap: 0.14rem; min-width: 0; }
-.pocket-recent-item__title { font-size: 0.97rem; font-weight: 675; line-height: 1.23; overflow-wrap: anywhere; }
+.pocket-recent-item__title, .pocket-recent-item__summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.pocket-recent-item__title { -webkit-line-clamp: 2; font-size: 0.97rem; font-weight: 675; line-height: 1.23; }
+.pocket-recent-item__summary { -webkit-line-clamp: 1; color: var(--pocket-muted); font-size: 0.85rem; }
 .pocket-recent-item__meta { color: var(--pocket-muted); font-size: 0.81rem; }
 .pocket-skeleton-row { display: flex; align-items: center; gap: 0.68rem; min-height: 4.15rem; padding: 0.55rem; }
 .pocket-skeleton-row > span, .pocket-skeleton-row > i { border-radius: 0.54rem; background: var(--pocket-border); }

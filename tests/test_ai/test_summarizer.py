@@ -104,6 +104,41 @@ def test_generate_summary_empty_content_returns_none(db, monkeypatch):
     assert fake.calls == 0
 
 
+def test_url_placeholder_clears_legacy_summary_without_using_ai(db, monkeypatch):
+    item = _item(db, _user(db).id, title="https://www.youtube.com/shorts/abc123xAbC1")
+    item.url = item.title
+    item.content = None
+    item.summary = "The provided content is a YouTube Shorts link."
+    db.commit()
+    fake = _FakeChat()
+    monkeypatch.setattr(summarizer, "get_chat_provider", lambda: fake)
+
+    assert summarizer.summarize_item(item.id, db) is None
+    assert item.summary is None
+    assert fake.calls == 0
+
+
+def test_video_brief_uses_transcript_before_caption_and_omits_provider_notice(db, monkeypatch):
+    item = _item(db, _user(db).id, title="Lauki kebabs")
+    item.url = "https://www.instagram.com/reel/example/"
+    item.source_platform = "instagram"
+    item.item_metadata = {"_sections": [
+        {"kind": "metadata_block", "text": "Sign in to Instagram"},
+        {"kind": "post", "text": "Make-ahead kebabs for a busy week."},
+        {"kind": "transcript_segment", "text": "Squeeze the grated lauki before shaping the kebabs."},
+    ]}
+    db.commit()
+
+    class InspectingChat:
+        def generate(self, prompt, **kwargs):
+            assert prompt.index("Squeeze the grated lauki") < prompt.index("Make-ahead kebabs")
+            assert "Sign in to Instagram" not in prompt
+            return "Squeeze excess moisture from grated lauki before forming make-ahead kebabs."
+
+    monkeypatch.setattr(summarizer, "get_chat_provider", InspectingChat)
+    assert "excess moisture" in summarizer.summarize_item(item.id, db)
+
+
 def test_generate_summary_provider_error_returns_none(db, monkeypatch):
     """Provider raises → graceful None."""
     def raise_error(*args, **kwargs):

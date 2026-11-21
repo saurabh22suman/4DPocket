@@ -71,20 +71,10 @@ def _try_sync_enrich(item: KnowledgeItem, db: Session, user_id: uuid.UUID) -> No
     if existing_tags:
         return
 
-    # For URL items: skip inline content fetching (too slow) - let Huey handle it.
-    # Just run lightweight tagging + summarization on whatever content is already set.
     try:
-        from fourdpocket.ai.sanitizer import sanitize_for_prompt
-        from fourdpocket.ai.tagger import auto_tag_item
+        from fourdpocket.ai.tagger import tag_saved_item
 
-        auto_tag_item(
-            item_id=item.id,
-            user_id=user_id,
-            title=sanitize_for_prompt(item.title or "", max_length=2000),
-            content=sanitize_for_prompt(item.content or "", max_length=4000),
-            description=sanitize_for_prompt(item.description or "", max_length=1000),
-            db=db,
-        )
+        tag_saved_item(item, db)
     except Exception as e:
         logger.warning("Sync tagging failed for item %s: %s", item.id, e)
 
@@ -198,8 +188,9 @@ def create_item(
     except Exception:
         pass  # Worker dispatch is best-effort
 
-    # Sync enrichment fallback: if Huey worker is not running, enrich inline
-    _try_sync_enrich(item, db, current_user.id)
+    # URL enrichment must wait for the source to be fetched.
+    if not item.url:
+        _try_sync_enrich(item, db, current_user.id)
 
     return item
 
@@ -725,8 +716,9 @@ def reprocess_item(
     try:
         from fourdpocket.workers.fetcher import fetch_and_process_url
         fetch_and_process_url(str(item_id), item.url, str(current_user.id))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not queue reprocessing for %s: %s", item_id, exc)
+        raise HTTPException(status_code=503, detail="Could not queue this bookmark. Try again shortly.") from exc
     return {"status": "queued", "item_id": str(item_id)}
 
 
