@@ -328,9 +328,15 @@ class TestOtherStageHandlers:
         self, db: Session, enrich_item, enrich_user, monkeypatch
     ):
         """Lines 313-343: tagging runs end-to-end (with mocks)."""
+        def tag_source(item_id, user_id, title, content, description, db):
+            assert item_id == enrich_item.id
+            assert user_id == enrich_item.user_id
+            assert "Machine learning" in content
+            return [{"name": "machine-learning", "confidence": 0.9, "auto_applied": False}]
+
         monkeypatch.setattr(
             "fourdpocket.ai.tagger.auto_tag_item",
-            lambda **kw: [{"name": "ai", "source": "auto"}],
+            tag_source,
         )
         monkeypatch.setattr(
             "fourdpocket.ai.domain_tagger.attach_domain_tag",
