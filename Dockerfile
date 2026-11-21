@@ -12,7 +12,7 @@ RUN pnpm build
 # Reuse the running image for a release with unchanged runtime dependencies.
 FROM ${FDP_RELEASE_BASE} AS release-refresh
 COPY src/ /app/src/
-COPY --from=frontend /app/frontend/dist /app/frontend/dist
+ADD 4dpocket-release-assets.tar.gz /app/frontend/dist/
 
 # ─── Stage 2: Python Dependencies ───────────────────────────────
 FROM python:3.12-slim AS builder
