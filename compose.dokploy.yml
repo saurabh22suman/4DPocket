@@ -1,6 +1,10 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      target: release-refresh
+      args:
+        FDP_RELEASE_BASE: pocket-4dpocket-xfvpdz-app:latest
     init: true
     restart: unless-stopped
     expose:
