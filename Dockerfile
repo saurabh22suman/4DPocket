@@ -1,5 +1,3 @@
-ARG FDP_RELEASE_BASE=python:3.12-slim
-
 # ─── Stage 1: Frontend Build ────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend
 
@@ -8,11 +6,6 @@ COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml 
 RUN npm install --global pnpm@11.22.0 && pnpm install --frozen-lockfile --ignore-scripts
 COPY frontend/ ./
 RUN pnpm build
-
-# Reuse the running image for a release with unchanged runtime dependencies.
-FROM ${FDP_RELEASE_BASE} AS release-refresh
-COPY src/ /app/src/
-ADD 4dpocket-release-assets.tar.gz /app/frontend/dist/
 
 # ─── Stage 2: Python Dependencies ───────────────────────────────
 FROM python:3.12-slim AS builder
